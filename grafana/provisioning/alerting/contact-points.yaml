@@ -1,0 +1,21 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: SAP Ops Team
+    receivers:
+      - uid: sap-ops-email
+        type: email
+        settings:
+          addresses: sap-ops@company.com
+      - uid: sap-ops-slack
+        type: slack
+        settings:
+          recipient: "#sap-alerts"
+          token: xoxb-slack-token
+          url: https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
+
+policies:
+  - orgId: 1
+    receiver: SAP Ops Team
+    group_by: ['grafana_folder', 'alertname']

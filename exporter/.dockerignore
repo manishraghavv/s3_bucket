@@ -1,0 +1,50 @@
+# =============================================================================
+# Docker Build Context — Ignore List
+#
+# Prevents unnecessary files from being sent to the Docker daemon during
+# image builds, improving build speed and avoiding accidental secret leaks.
+# =============================================================================
+
+# ── Dependencies (installed inside the image) ────────────────────────────
+node_modules/
+npm-debug.log*
+
+# ── Environment / secrets ────────────────────────────────────────────────
+# The .env file at project root is passed via Docker Compose env_file.
+# It must NOT be baked into the image to keep secrets out of layers.
+.env
+.env.*
+!.env.example
+
+# ── Version control ──────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── IDE / editor ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS artifacts ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs ─────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── PM2 process files (not needed in Docker) ─────────────────────────────
+ecosystem.config.js
+ecosystem.config.*.js
+
+# ── Test and lint (not needed in production image) ───────────────────────
+tests/
+test/
+__tests__/
+coverage/
+.eslintrc*
+.prettierrc*
+jest.config*

@@ -1,0 +1,54 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "title": "SAP Exporter Overview",
+  "uid": "sap-exporter-overview",
+  "version": 1,
+  "schemaVersion": 36,
+  "tags": ["sap", "monitoring"],
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "60s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+  },
+  "panels": [
+    {
+      "title": "SAP Metrics Overview",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "displayMode": "list"
+          }
+        }
+      },
+      "pluginVersion": "8.5.0",
+      "targets": [
+        {
+          "expr": "count(sap_node_up)",
+          "legendFormat": "Up",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

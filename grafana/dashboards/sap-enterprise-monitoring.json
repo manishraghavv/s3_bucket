@@ -1,0 +1,1888 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_TIMESCALEDB",
+      "label": "TimescaleDB",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "postgres",
+      "pluginName": "PostgreSQL"
+    }
+  ],
+  "__requires": [],
+  "annotations": {
+    "list": []
+  },
+  "description": "SAP Enterprise Monitoring Dashboard - All T-Codes",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Overview",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "title": "Active Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Locked Objects",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(lock_count),0) as value FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Running Work Processes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 6, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_status = 'Running'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Waiting Work Processes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 9, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_status = 'Waiting'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 15 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Today's Dumps",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM st22_dumps WHERE time >= date_trunc('day', NOW()) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "CPU Usage %",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100 - cpu_idle, 2) as value FROM st06_system_perf WHERE tenant = '${tenant}' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Memory Usage %",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100.0 * memory_used_bytes / NULLIF(memory_total_bytes, 0), 2) as value FROM st06_system_perf WHERE tenant = '${tenant}' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 75 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Health Score",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 1 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH metrics AS (SELECT (100-cpu_idle) as cpu_pct, (100.0*memory_used_bytes/NULLIF(memory_total_bytes,0)) as mem_pct, disk_utilization FROM st06_system_perf WHERE tenant = '${tenant}' ORDER BY time DESC LIMIT 1) SELECT ROUND(100 - GREATEST(COALESCE(cpu_pct,0)/10, COALESCE(mem_pct,0)/10, COALESCE(disk_utilization,0)/10), 0) as value FROM metrics",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 40 },
+              { "color": "yellow", "value": 60 },
+              { "color": "green", "value": 80 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "AL08 Panels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "title": "Total Logged Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT user_name) as value FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Unique Clients",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT client) as value FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "title": "Active TCodes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT transaction) as value FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "Unique Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT user_name) as value FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "title": "Users by Client",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT client, COUNT(*) as sessions FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY client ORDER BY sessions DESC LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "title": "Users by Transaction",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT transaction, COUNT(*) as count FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY transaction ORDER BY count DESC LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "title": "Users by Terminal",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT terminal, COUNT(*) as sessions FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY terminal ORDER BY sessions DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "legend": { "displayMode": "list", "placement": "right" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 18,
+      "title": "Active Sessions Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, COUNT(*) as active_sessions FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 19,
+      "title": "AL08 User Table",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT client as \"Client\", user_name as \"User\", transaction as \"Transaction\", terminal as \"Terminal\", login_time as \"Login Time\", host as \"Host\" FROM al08_sessions WHERE $__timeFilter(time) AND tenant = '${tenant}' ORDER BY login_time DESC LIMIT 500",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "show": false, "enablePagination": true },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "SM12 Panels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "title": "Total Locks",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 37 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(lock_count),0) as value FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 22,
+      "title": "Locked Tables",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 37 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT table_name) as value FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 23,
+      "title": "Locked Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 37 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT user_name) as value FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 24,
+      "title": "Locks by User",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 41 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT user_name, SUM(lock_count) as locks FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY user_name ORDER BY locks DESC LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 25,
+      "title": "Locks by Table",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 41 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT table_name, SUM(lock_count) as locks FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY table_name ORDER BY locks DESC LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 26,
+      "title": "Lock Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 41 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, SUM(lock_count) as total_locks FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 27,
+      "title": "SM12 Lock Table",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 49 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT table_name as \"Table\", lock_object as \"Lock Object\", user_name as \"User\", client as \"Client\", lock_mode as \"Lock Mode\" FROM sm12_locks WHERE $__timeFilter(time) AND tenant = '${tenant}' ORDER BY time DESC LIMIT 500",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "show": false, "enablePagination": true },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "SM50 Panels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 59 },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "title": "Total WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 0, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 32,
+      "title": "Running WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 3, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_status = 'Running'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 33,
+      "title": "Waiting WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 6, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_status = 'Waiting'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 34,
+      "title": "Dialog WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 9, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_type = 'DIA'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 35,
+      "title": "Background WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 12, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_type = 'BGD'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 36,
+      "title": "Update WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 15, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_type = 'UPD'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 37,
+      "title": "Spool WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 18, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_type = 'SPO'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 38,
+      "title": "Stopped WPs",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 21, "y": 60 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_status = 'Stopped'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 40,
+      "title": "WP Status Distribution",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 63 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT wp_status, COUNT(*) as count FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY wp_status",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "legend": { "displayMode": "list", "placement": "right" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 41,
+      "title": "WP Type Distribution",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 63 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT wp_type, COUNT(*) as count FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY wp_type",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 42,
+      "title": "CPU Usage Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 63 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, AVG(cpu_time) as avg_cpu FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' AND wp_status='Running' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 43,
+      "title": "Top CPU Consumers",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 71 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT user_name, SUM(cpu_time) as total_cpu FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' GROUP BY user_name ORDER BY total_cpu DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 44,
+      "title": "WP Table",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 79 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT wp_number as \"WP#\", wp_type as \"Type\", wp_status as \"Status\", ROUND(cpu_time,2) as \"CPU (s)\", user_name as \"User\", program as \"Program\", client as \"Client\", report as \"Report\" FROM sm50_workprocesses WHERE $__timeFilter(time) AND tenant = '${tenant}' ORDER BY cpu_time DESC NULLS LAST LIMIT 500",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "show": false, "enablePagination": true },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "ST06 Panels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 89 },
+      "collapsed": false
+    },
+    {
+      "id": 51,
+      "title": "CPU %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 90 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100 - cpu_idle, 2) as value FROM st06_system_perf WHERE tenant='${tenant}' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 52,
+      "title": "Memory %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 90 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100.0*memory_used_bytes/NULLIF(memory_total_bytes,0),2) as value FROM st06_system_perf WHERE tenant='${tenant}' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 53,
+      "title": "Disk %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 90 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT disk_utilization as value FROM st06_system_perf WHERE tenant='${tenant}' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 54,
+      "title": "Swap %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 90 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100.0*swap_used_bytes/NULLIF(swap_total_bytes,0),2) as value FROM st06_system_perf WHERE tenant='${tenant}' ORDER BY time DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 55,
+      "title": "CPU Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 96 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, AVG(100-cpu_idle) as \"CPU Total\", AVG(cpu_user) as \"User\", AVG(cpu_system) as \"System\", AVG(cpu_wait) as \"I/O Wait\" FROM st06_system_perf WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 56,
+      "title": "Memory Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 96 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, AVG(memory_used_bytes)/1073741824 as \"Used (GB)\", AVG(memory_free_bytes)/1073741824 as \"Free (GB)\" FROM st06_system_perf WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 57,
+      "title": "Disk Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 104 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, AVG(disk_utilization) as \"Utilization %\" FROM st06_system_perf WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 58,
+      "title": "Network Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 104 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, AVG(network_in_bytes)/1024 as \"In (KB/s)\", AVG(network_out_bytes)/1024 as \"Out (KB/s)\" FROM st06_system_perf WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 59,
+      "title": "Page In/Out Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 104 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('5 minutes', time) as time, AVG(page_in_rate) as \"Page In\", AVG(page_out_rate) as \"Page Out\" FROM st06_system_perf WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 60,
+      "type": "row",
+      "title": "ST22 Panels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 112 },
+      "collapsed": false
+    },
+    {
+      "id": 61,
+      "title": "Today's Dumps",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 113 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM st22_dumps WHERE time >= date_trunc('day', NOW()) AND tenant='${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 62,
+      "title": "Critical Dumps",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 113 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM st22_dumps WHERE time >= date_trunc('day', NOW()) AND tenant='${tenant}' AND is_critical=TRUE",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 63,
+      "title": "Unique Programs",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 113 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT program) as value FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 64,
+      "title": "Unique Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 113 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT user_name) as value FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}'",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 65,
+      "title": "Dump Types",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 117 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT dump_type, COUNT(*) as count FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY dump_type ORDER BY count DESC",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "pie",
+        "legend": { "displayMode": "list", "placement": "right" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 66,
+      "title": "Top Programs",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 117 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT program, COUNT(*) as dumps FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY program ORDER BY dumps DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 67,
+      "title": "Top Users",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 117 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT user_name, COUNT(*) as dumps FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY user_name ORDER BY dumps DESC LIMIT 10",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 68,
+      "title": "Dump Timeline",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 125 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time_bucket('1 hour', time) as time, COUNT(*) as \"Total Dumps\", COUNT(*) FILTER (WHERE is_critical) as \"Critical\" FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}' GROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 69,
+      "title": "Dump Table",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 133 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT time as \"Date/Time\", client as \"Client\", user_name as \"User\", program as \"Program\", dump_type as \"Dump Type\", host as \"Host\", line_number as \"Line#\", is_critical as \"Critical\" FROM st22_dumps WHERE $__timeFilter(time) AND tenant='${tenant}' ORDER BY time DESC LIMIT 500",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "show": false, "enablePagination": true },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    }
+  ]
+}

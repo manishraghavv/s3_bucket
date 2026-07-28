@@ -1,0 +1,192 @@
+# =============================================================================
+# SAP Enterprise Monitoring Stack — Docker Compose
+#
+# Architecture:
+#   Amazon S3
+#     ├── sap-exporter (:9105) → Prometheus (:9090) → Grafana (:3000)
+#     └── sap-db-bridge        → TimescaleDB (:5432) → Grafana (:3000)
+#
+# Usage:
+#   docker compose down --remove-orphans
+#   docker compose up --build -d
+#   docker compose logs -f
+#   docker compose down
+#
+# Expected result after startup:
+#   sap-timescaledb  Up (healthy)
+#   sap-exporter     Up (healthy)
+#   sap-prometheus   Up
+#   sap-db-bridge    Up
+#   sap-grafana      Up
+# =============================================================================
+
+networks:
+  monitoring:
+    driver: bridge
+
+# ── Volumes ──────────────────────────────────────────────────────────────
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  timescaledb-data:
+
+# ── Services ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # TimescaleDB — time-series PostgreSQL for SAP monitoring data
+  # ─────────────────────────────────────────────────────────────────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: sap-timescaledb
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sapmonitor}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-SapMonitor2024!}
+      - POSTGRES_DB=${POSTGRES_DB:-sap_monitoring}
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sapmonitor} -d ${POSTGRES_DB:-sap_monitoring}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    networks:
+      - monitoring
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SAP Prometheus Exporter — reads JSON files from S3, exposes metrics
+  # ─────────────────────────────────────────────────────────────────────
+  sap-exporter:
+    build:
+      context: ./exporter
+      dockerfile: Dockerfile
+    container_name: sap-exporter
+    restart: unless-stopped
+    ports:
+      - "9106:9105"
+    env_file:
+      - ./.env
+    networks:
+      - monitoring
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://localhost:9105/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SAP DB Bridge — reads JSON from S3, writes to TimescaleDB
+  # Runs every 60s to sync the latest S3 payloads into TimescaleDB
+  # ─────────────────────────────────────────────────────────────────────
+  sap-db-bridge:
+    build:
+      context: ./db-bridge
+      dockerfile: Dockerfile
+    container_name: sap-db-bridge
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_HOST=timescaledb
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-sapmonitor}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-SapMonitor2024!}
+      - POSTGRES_DB=${POSTGRES_DB:-sap_monitoring}
+      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-60}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      sap-exporter:
+        condition: service_healthy
+    networks:
+      - monitoring
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Prometheus — scrape the exporter for SAP metrics
+  # ─────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sap-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    depends_on:
+      sap-exporter:
+        condition: service_healthy
+    networks:
+      - monitoring
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Grafana — visualise SAP metrics from Prometheus AND TimescaleDB
+  # ─────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sap-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/sap-exporter-overview.json
+      - GF_UNIFIED_ALERTING_ENABLED=true
+      - GF_ALERTING_ENABLED=false
+      # Pass DB credentials to Grafana provisioning
+      - POSTGRES_USER=${POSTGRES_USER:-sapmonitor}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-SapMonitor2024!}
+      - POSTGRES_DB=${POSTGRES_DB:-sap_monitoring}
+    depends_on:
+      prometheus:
+        condition: service_started
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - monitoring
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

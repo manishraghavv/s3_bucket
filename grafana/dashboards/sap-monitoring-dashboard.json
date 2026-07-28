@@ -1,0 +1,1754 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "title": "SAP Monitoring Dashboard",
+  "uid": "sap-monitoring-dashboard",
+  "description": "Live SAP system monitoring via Prometheus — AL08 sessions, SM12 locks, SM50 work processes, ST06 system performance, ST22 ABAP dumps. Data source: sap-exporter, scraped from S3 every 30s.",
+  "version": 1,
+  "schemaVersion": 38,
+  "tags": ["sap", "monitoring", "enterprise"],
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "30s",
+  "graphTooltip": 1,
+  "links": [
+    {
+      "title": "SAP Enterprise Monitoring (TimescaleDB, historical)",
+      "type": "dashboards",
+      "tags": ["sap"],
+      "asDropdown": false,
+      "icon": "external link",
+      "url": "/d/sap-enterprise-monitoring/sap-enterprise-monitoring"
+    },
+    {
+      "title": "Prometheus",
+      "type": "link",
+      "icon": "external link",
+      "url": "http://localhost:9091",
+      "targetBlank": true
+    }
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"
+    ],
+    "time_options": [
+      "5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "tcode",
+        "type": "custom",
+        "label": "SAP T-Code",
+        "query": "AL08,SM50,SM12,ST22,ST06",
+        "current": {
+          "text": "ST06",
+          "value": "ST06"
+        },
+        "options": [
+          { "text": "ST06 — System Overview", "value": "ST06" },
+          { "text": "AL08 — Logged-On Users", "value": "AL08" },
+          { "text": "SM50 — Work Processes", "value": "SM50" },
+          { "text": "SM12 — Lock Entries", "value": "SM12" },
+          { "text": "ST22 — ABAP Dumps", "value": "ST22" }
+        ],
+        "includeAll": false,
+        "multi": false,
+        "hide": 0,
+        "skipUrlSync": false,
+        "description": "Filters the \"Active Metrics\" tile above to the selected T-Code. All other panels show every T-Code at all times."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 200,
+      "title": "Summary",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "title": "Exporter Health",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "description": "SAP Exporter process health status",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "red", "value": 0 },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "Down", "color": "red" },
+                "1": { "text": "Up", "color": "green" }
+              }
+            }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"sap-exporter\"}",
+          "legendFormat": "Exporter",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 2,
+      "title": "Last Collection",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "description": "Exporter process start time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "green", "value": null } ]
+          },
+          "color": { "mode": "none" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_node_process_start_time_seconds * 1000",
+          "legendFormat": "Started",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 3,
+      "title": "Active Metrics",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "description": "Number of active metrics for the selected T-Code",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count({__name__=~\"sap_${tcode:raw}_.+\"})",
+          "legendFormat": "Metrics",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 4,
+      "title": "Total SAP Series",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "description": "Total active SAP metric series across all T-Codes",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count({__name__=~\"sap_.+\"})",
+          "legendFormat": "Total Series",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+
+    {
+      "id": 300,
+      "title": "ST06 — System Overview",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "id": 10,
+      "title": "CPU Idle",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 6 },
+      "description": "CPU idle percentage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 30 },
+              { "color": "green", "value": 60 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(sap_st06_cpu_idle_cpu{exporter=\"sap-prometheus-exporter\"})",
+          "legendFormat": "CPU Idle",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 11,
+      "title": "CPU User",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 6 },
+      "description": "CPU user percentage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(sap_st06_cpu_user_cpu{exporter=\"sap-prometheus-exporter\"})",
+          "legendFormat": "CPU User",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 12,
+      "title": "CPU System",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 6 },
+      "description": "CPU system percentage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 60 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(sap_st06_cpu_sys_cpu{exporter=\"sap-prometheus-exporter\"})",
+          "legendFormat": "CPU System",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 13,
+      "title": "CPU I/O Wait",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 6 },
+      "description": "CPU I/O wait percentage",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(sap_st06_cpu_wait_true{exporter=\"sap-prometheus-exporter\"})",
+          "legendFormat": "CPU Wait",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 14,
+      "title": "CPU Usage Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 11 },
+      "description": "CPU utilization over time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "min"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "lineStyle": { "fill": "solid" },
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 3,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "axisColorMode": "text",
+            "axisCenteredZero": false,
+            "scaleDistribution": { "type": "linear" },
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "thresholdsStyle": { "mode": "off" }
+          }
+        }
+      },
+      "targets": [
+        { "expr": "avg(sap_st06_cpu_idle_cpu{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "Idle", "refId": "A" },
+        { "expr": "avg(sap_st06_cpu_user_cpu{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "User", "refId": "B" },
+        { "expr": "avg(sap_st06_cpu_sys_cpu{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "System", "refId": "C" },
+        { "expr": "avg(sap_st06_cpu_wait_true{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "I/O Wait", "refId": "D" }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 15,
+      "title": "CPU Metrics Table",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 11 },
+      "description": "Detailed CPU metrics",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "sortBy": [],
+        "footer": { "show": false, "countRows": false, "enablePagination": true },
+        "frameIndex": 0,
+        "showTypeIcons": false,
+        "rowHeight": "sm",
+        "cellHeight": "sm",
+        "overlay": null
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "align": "left",
+            "displayMode": "color-text",
+            "cellOptions": { "type": "auto", "mode": "gradient" },
+            "minWidth": 80
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        { "expr": "avg(sap_st06_cpu_idle_cpu{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "CPU Idle", "refId": "A" },
+        { "expr": "avg(sap_st06_cpu_user_cpu{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "CPU User", "refId": "B" },
+        { "expr": "avg(sap_st06_cpu_sys_cpu{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "CPU System", "refId": "C" },
+        { "expr": "avg(sap_st06_cpu_wait_true{exporter=\"sap-prometheus-exporter\"})", "legendFormat": "CPU I/O Wait", "refId": "D" }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": { "Value": "Current Value" }
+          }
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+
+    {
+      "id": 350,
+      "title": "ST06 — Memory & Per-CPU Details",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false
+    },
+    {
+      "id": 60,
+      "title": "Total Page-In Rate (Pages/hr)",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 19 },
+      "description": "Total memory pages paged in per hour across all memory banks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 5000 },
+              { "color": "red", "value": 50000 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(sap_st06_memory_in_pg_hour{exporter=\"sap-prometheus-exporter\",memory=~\".+\"})",
+          "legendFormat": "Pages In/hr",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 61,
+      "title": "Total Page-Out Rate (Pages/hr)",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 19 },
+      "description": "Total memory pages paged out per hour across all memory banks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 5000 },
+              { "color": "red", "value": 50000 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(sap_st06_memory_out_pg_hou{exporter=\"sap-prometheus-exporter\",memory=~\".+\"})",
+          "legendFormat": "Pages Out/hr",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 62,
+      "title": "Avg CPU User % per Core",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 19 },
+      "description": "Average user CPU utilisation across all cores",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 80 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(sap_st06_cpu_user_cpu{exporter=\"sap-prometheus-exporter\",cpu=~\".+\"})",
+          "legendFormat": "Avg User %",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 63,
+      "title": "Avg CPU Idle % per Core",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 19 },
+      "description": "Average idle CPU percentage across all cores",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 30 },
+              { "color": "green", "value": 60 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg(sap_st06_cpu_idle_cpu{exporter=\"sap-prometheus-exporter\",cpu=~\".+\"})",
+          "legendFormat": "Avg Idle %",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 64,
+      "title": "Per-CPU Usage (User %)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "description": "User CPU % per individual core over time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_st06_cpu_user_cpu{exporter=\"sap-prometheus-exporter\",cpu=~\".+\"}",
+          "legendFormat": "CPU {{cpu}}",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 65,
+      "title": "Memory Page-In Rate per Bank",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "description": "Pages paged in per hour, per memory bank",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_st06_memory_in_pg_hour{exporter=\"sap-prometheus-exporter\",memory=~\".+\"}",
+          "legendFormat": "Bank {{memory}}",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+
+    {
+      "id": 400,
+      "title": "AL08 — Logged-On Users",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "title": "Logged Users",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 19 },
+      "description": "Total logged-on users",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 200 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_al08_total_records",
+          "legendFormat": "Logged Users",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 21,
+      "title": "Unique Users",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 19 },
+      "description": "Distinct SAP user IDs with active sessions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count(sap_al08_userid_count)",
+          "legendFormat": "Unique Users",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 22,
+      "title": "Unique Clients",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 19 },
+      "description": "Distinct SAP clients (mandants) with active sessions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count(sap_al08_client_count)",
+          "legendFormat": "Unique Clients",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 23,
+      "title": "Unique Terminals",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 19 },
+      "description": "Distinct terminals with active sessions",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count(sap_al08_terminal_count)",
+          "legendFormat": "Unique Terminals",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 24,
+      "title": "User Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 24 },
+      "description": "User session trend over time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "min", "last"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "lineStyle": { "fill": "solid" },
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 3,
+            "stacking": { "mode": "normal", "group": "A" },
+            "axisPlacement": "auto",
+            "axisLabel": "Users",
+            "axisColorMode": "text",
+            "axisCenteredZero": false,
+            "scaleDistribution": { "type": "linear" },
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "thresholdsStyle": { "mode": "off" }
+          }
+        }
+      },
+      "targets": [
+        { "expr": "sap_al08_total_records", "legendFormat": "Logged Users", "refId": "A" },
+        { "expr": "count(sap_al08_userid_count)", "legendFormat": "Unique Users", "refId": "B" },
+        { "expr": "count(sap_al08_client_count)", "legendFormat": "Unique Clients", "refId": "C" },
+        { "expr": "count(sap_al08_terminal_count)", "legendFormat": "Unique Terminals", "refId": "D" }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 25,
+      "title": "User Sessions Table",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 24 },
+      "description": "Detailed user session data",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "sortBy": [],
+        "footer": { "show": false, "countRows": false, "enablePagination": true },
+        "frameIndex": 0,
+        "showTypeIcons": false,
+        "rowHeight": "sm",
+        "cellHeight": "sm",
+        "overlay": null
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "left",
+            "displayMode": "color-text",
+            "cellOptions": { "type": "auto", "mode": "gradient" },
+            "minWidth": 80
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 200 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        { "expr": "sap_al08_total_records", "legendFormat": "Logged Users", "refId": "A" },
+        { "expr": "count(sap_al08_userid_count)", "legendFormat": "Unique Users", "refId": "B" },
+        { "expr": "count(sap_al08_client_count)", "legendFormat": "Unique Clients", "refId": "C" },
+        { "expr": "count(sap_al08_terminal_count)", "legendFormat": "Unique Terminals", "refId": "D" }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": { "Value": "Session Count" }
+          }
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+
+    {
+      "id": 500,
+      "title": "SM12 — Lock Entries",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false
+    },
+    {
+      "id": 30,
+      "title": "Lock Entries",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 32 },
+      "description": "Total lock entries in the system",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_sm12_total_records",
+          "legendFormat": "Lock Entries",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 31,
+      "title": "Unique Tables Locked",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 32 },
+      "description": "Distinct tables with active lock entries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count(sap_sm12_table_count)",
+          "legendFormat": "Unique Tables",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 32,
+      "title": "Unique Users Holding Locks",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 32 },
+      "description": "Distinct users currently holding locks",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "count(sap_sm12_user_id_count)",
+          "legendFormat": "Unique Users",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 34,
+      "title": "Lock Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 37 },
+      "description": "Lock entries over time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "last"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "lineStyle": { "fill": "solid" },
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 3,
+            "stacking": { "mode": "normal", "group": "A" },
+            "axisPlacement": "auto",
+            "axisLabel": "Lock Count",
+            "axisColorMode": "text",
+            "axisCenteredZero": false,
+            "scaleDistribution": { "type": "linear" },
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "thresholdsStyle": { "mode": "off" }
+          }
+        }
+      },
+      "targets": [
+        { "expr": "sap_sm12_total_records", "legendFormat": "Total Locks", "refId": "A" },
+        { "expr": "count(sap_sm12_table_count)", "legendFormat": "Unique Tables", "refId": "B" },
+        { "expr": "count(sap_sm12_user_id_count)", "legendFormat": "Unique Users", "refId": "C" }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 35,
+      "title": "Lock Details Table",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 37 },
+      "description": "Detailed lock entry information",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "sortBy": [],
+        "footer": { "show": false, "countRows": false, "enablePagination": true },
+        "frameIndex": 0,
+        "showTypeIcons": false,
+        "rowHeight": "sm",
+        "cellHeight": "sm",
+        "overlay": null
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "left",
+            "displayMode": "color-text",
+            "cellOptions": { "type": "auto", "mode": "gradient" },
+            "minWidth": 80
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        { "expr": "sap_sm12_total_records", "legendFormat": "Total Lock Entries", "refId": "A" },
+        { "expr": "count(sap_sm12_table_count)", "legendFormat": "Unique Tables", "refId": "B" },
+        { "expr": "count(sap_sm12_user_id_count)", "legendFormat": "Unique Users", "refId": "C" }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": { "Value": "Current Value" }
+          }
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+
+    {
+      "id": 600,
+      "title": "SM50 — Work Processes",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "collapsed": false
+    },
+    {
+      "id": 40,
+      "title": "Running WPs",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 45 },
+      "description": "Currently running work processes",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(sap_sm50_wp_status_count{wp_status=\"Running\"})",
+          "legendFormat": "Running",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 41,
+      "title": "Background WPs",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 45 },
+      "description": "Work processes of type BGD (background jobs)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(sap_sm50_wp_typ_count{wp_typ=\"BGD\"})",
+          "legendFormat": "Background",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 42,
+      "title": "Waiting WPs",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 45 },
+      "description": "Work processes waiting for resources",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(sap_sm50_wp_status_count{wp_status=\"Waiting\"})",
+          "legendFormat": "Waiting",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 43,
+      "title": "Total Work Processes",
+      "type": "bargauge",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 45 },
+      "description": "Total work processes across all types",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "minVizWidth": 0,
+        "minVizHeight": 10,
+        "maxVizHeight": 30,
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "titleSize": 14,
+          "valueSize": 18
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "blue", "value": null } ]
+          },
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "custom": {
+            "displayMode": "gradient"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_sm50_total_records",
+          "legendFormat": "Total WPs",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 44,
+      "title": "Work Process Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 50 },
+      "description": "Work process distribution over time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "last"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "lineStyle": { "fill": "solid" },
+            "fillOpacity": 15,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 3,
+            "stacking": { "mode": "normal", "group": "A" },
+            "axisPlacement": "auto",
+            "axisLabel": "Work Processes",
+            "axisColorMode": "text",
+            "axisCenteredZero": false,
+            "scaleDistribution": { "type": "linear" },
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "thresholdsStyle": { "mode": "off" }
+          }
+        }
+      },
+      "targets": [
+        { "expr": "sum(sap_sm50_wp_status_count{wp_status=\"Running\"})", "legendFormat": "Running", "refId": "A" },
+        { "expr": "sum(sap_sm50_wp_typ_count{wp_typ=\"BGD\"})", "legendFormat": "Background", "refId": "B" },
+        { "expr": "sum(sap_sm50_wp_status_count{wp_status=\"Waiting\"})", "legendFormat": "Waiting", "refId": "C" }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 45,
+      "title": "Work Process Table",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 50 },
+      "description": "Detailed work process metrics",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "sortBy": [],
+        "footer": { "show": false, "countRows": false, "enablePagination": true },
+        "frameIndex": 0,
+        "showTypeIcons": false,
+        "rowHeight": "sm",
+        "cellHeight": "sm",
+        "overlay": null
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "left",
+            "displayMode": "color-text",
+            "cellOptions": { "type": "auto", "mode": "gradient" },
+            "minWidth": 80
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        { "expr": "sum(sap_sm50_wp_status_count{wp_status=\"Running\"})", "legendFormat": "Running WPs", "refId": "A" },
+        { "expr": "sum(sap_sm50_wp_typ_count{wp_typ=\"BGD\"})", "legendFormat": "Background WPs", "refId": "B" },
+        { "expr": "sum(sap_sm50_wp_status_count{wp_status=\"Waiting\"})", "legendFormat": "Waiting WPs", "refId": "C" },
+        { "expr": "sap_sm50_total_records", "legendFormat": "Total WPs", "refId": "D" }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": { "Value": "Current Count" }
+          }
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+
+    {
+      "id": 700,
+      "title": "ST22 — ABAP Dumps",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 57 },
+      "collapsed": false
+    },
+    {
+      "id": 50,
+      "title": "Total Dumps",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 58 },
+      "description": "Total ABAP short dumps",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_st22_total_records",
+          "legendFormat": "Total Dumps",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 51,
+      "title": "Today's Dumps",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 58 },
+      "description": "ABAP dumps today",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sap_st22_total_records",
+          "legendFormat": "Today",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 52,
+      "title": "Critical Dumps",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 58 },
+      "description": "Critical severity ABAP dumps",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(sap_st22_except_count)",
+          "legendFormat": "Critical",
+          "refId": "A"
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 54,
+      "title": "Dump Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 63 },
+      "description": "ABAP dump frequency over time",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "legend": {
+          "calcs": ["mean", "max", "last"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "lineInterpolation": "smooth",
+            "lineStyle": { "fill": "solid" },
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "spanNulls": true,
+            "showPoints": "never",
+            "pointSize": 3,
+            "stacking": { "mode": "normal", "group": "A" },
+            "axisPlacement": "auto",
+            "axisLabel": "Dump Count",
+            "axisColorMode": "text",
+            "axisCenteredZero": false,
+            "scaleDistribution": { "type": "linear" },
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "thresholdsStyle": { "mode": "off" }
+          }
+        }
+      },
+      "targets": [
+        { "expr": "sap_st22_total_records", "legendFormat": "Total Dumps", "refId": "A" },
+        { "expr": "sum(sap_st22_except_count)", "legendFormat": "Critical Dumps", "refId": "B" }
+      ],
+      "pluginVersion": "10.4.0"
+    },
+    {
+      "id": 55,
+      "title": "Dump Details Table",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 63 },
+      "description": "Detailed ABAP dump information",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "sortBy": [],
+        "footer": { "show": false, "countRows": false, "enablePagination": true },
+        "frameIndex": 0,
+        "showTypeIcons": false,
+        "rowHeight": "sm",
+        "cellHeight": "sm",
+        "overlay": null
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "left",
+            "displayMode": "color-text",
+            "cellOptions": { "type": "auto", "mode": "gradient" },
+            "minWidth": 80
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [
+        { "expr": "sap_st22_total_records", "legendFormat": "Total Dumps", "refId": "A" },
+        { "expr": "sap_st22_total_records", "legendFormat": "Today's Dumps", "refId": "B" },
+        { "expr": "sum(sap_st22_except_count)", "legendFormat": "Critical Dumps", "refId": "C" }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {},
+            "renameByName": { "Value": "Current Value" }
+          }
+        }
+      ],
+      "pluginVersion": "10.4.0"
+    }
+  ]
+}

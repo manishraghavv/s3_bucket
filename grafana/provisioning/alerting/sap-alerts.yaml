@@ -1,0 +1,212 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: SAP Enterprise Alerts
+    folder: SAP
+    interval: 1m
+    rules:
+      - uid: sap-cpu-critical
+        title: SAP CPU Critical
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: |
+                SELECT ROUND(100 - cpu_idle, 2) as value
+                FROM st06_system_perf
+                ORDER BY time DESC LIMIT 1
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator:
+                    params: [90]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: critical
+          team: sap-ops
+        annotations:
+          summary: SAP CPU usage is above 90%
+          description: CPU usage has exceeded 90% for more than 5 minutes
+          runbook_url: https://wiki.company.com/sap/cpu-alert
+      
+      - uid: sap-memory-high
+        title: SAP Memory High
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: |
+                SELECT ROUND(100.0 * memory_used_bytes / NULLIF(memory_total_bytes, 0), 2) as value
+                FROM st06_system_perf
+                ORDER BY time DESC LIMIT 1
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator:
+                    params: [85]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    type: last
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        labels:
+          severity: warning
+          team: sap-ops
+        annotations:
+          summary: SAP Memory usage is above 85%
+          description: Memory usage has exceeded 85% threshold
+
+      - uid: sap-disk-critical
+        title: SAP Disk Usage Critical
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: "SELECT disk_utilization as value FROM st06_system_perf ORDER BY time DESC LIMIT 1"
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator: {params: [90], type: gt}
+                  query: {params: [A]}
+                  reducer: {type: last}
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: SAP Disk usage above 90%
+
+      - uid: sap-dumps-high
+        title: SAP ABAP Dumps High
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: "SELECT COUNT(*) as value FROM st22_dumps WHERE time >= date_trunc('day', NOW())"
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator: {params: [5], type: gt}
+                  query: {params: [A]}
+                  reducer: {type: last}
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 5 ABAP dumps today
+          description: '{{ $values.A }} ABAP dumps have occurred today'
+
+      - uid: sap-locks-high
+        title: SAP Lock Entries High
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: "SELECT COALESCE(SUM(lock_count),0) as value FROM sm12_locks WHERE time > NOW() - INTERVAL '5 minutes'"
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator: {params: [20], type: gt}
+                  query: {params: [A]}
+                  reducer: {type: last}
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 20 lock entries in SAP
+
+      - uid: sap-users-high  
+        title: SAP Users High
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: "SELECT COUNT(DISTINCT user_name) as value FROM al08_sessions WHERE time > NOW() - INTERVAL '5 minutes'"
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator: {params: [80], type: gt}
+                  query: {params: [A]}
+                  reducer: {type: last}
+        for: 2m
+        labels: {severity: info}
+        annotations:
+          summary: More than 80 concurrent SAP users
+
+      - uid: sap-bg-jobs-high
+        title: SAP Background Jobs High
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: TimescaleDB
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              rawSql: "SELECT COUNT(*) as value FROM sm50_workprocesses WHERE time > NOW() - INTERVAL '5 minutes' AND wp_type='BTC' AND wp_status='Running'"
+              format: table
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: threshold
+              conditions:
+                - evaluator: {params: [5], type: gt}
+                  query: {params: [A]}
+                  reducer: {type: last}
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 5 running background jobs
+          description: High number of concurrent background jobs detected

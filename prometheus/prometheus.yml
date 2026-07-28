@@ -1,0 +1,42 @@
+# =============================================================================
+# Prometheus Configuration — SAP Exporter
+#
+# Scrapes the SAP Prometheus Exporter running on port 9105.
+# =============================================================================
+
+global:
+  scrape_interval:     60s
+  evaluation_interval: 60s
+
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager).
+  external_labels:
+    monitor: "sap-monitoring"
+
+# Rule files (not yet configured)
+# rule_files:
+#   - "alerts.yml"
+
+# Scrape configuration
+scrape_configs:
+  # ── SAP Exporter ─────────────────────────────────────────────────────
+  # The exporter exposes SAP metrics scraped from S3 JSON files.
+  # Metrics are updated each time Prometheus scrapes this endpoint.
+  - job_name: "sap-exporter"
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - "sap-exporter:9105"
+        labels:
+          exporter: "sap-prometheus-exporter"
+          version: "1.0.0"
+
+  # ── Prometheus self-monitoring ───────────────────────────────────────
+  - job_name: "prometheus"
+    scrape_interval: 60s
+    static_configs:
+      - targets:
+          - "localhost:9090"

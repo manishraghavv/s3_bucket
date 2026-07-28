@@ -6,14 +6,16 @@ Production-ready SAP system monitoring built on **Amazon S3**, **Node.js**, **Pr
 SAP ABAP
     │
     ▼
-Node.js Upload API
+Generate JSON files
     │
     ▼
 Amazon S3 Bucket
     │
     ▼
-Node.js Prometheus Exporter   ←  You are here
-    │
+Node.js Prometheus Exporter
+    │  Reads latest JSON per T-Code
+    │  Parses using T-Code-specific collectors
+    │  Generates real Prometheus metrics (no fake values)
     ▼
 /metrics
     │
@@ -32,16 +34,10 @@ Grafana Dashboard
 - [Supported SAP T-Codes](#supported-sap-t-codes)
 - [Prerequisites](#prerequisites)
 - [Quick Start (Docker)](#quick-start-docker)
-- [Manual Deployment (Ubuntu / EC2)](#manual-deployment-ubuntu--ec2)
-- [Configuration](#configuration)
 - [Exporter Details](#exporter-details)
-- [Prometheus Configuration](#prometheus-configuration)
+- [Supported Metrics](#supported-metrics)
 - [Grafana Dashboard](#grafana-dashboard)
-- [Adding New T-Codes](#adding-new-t-codes)
-- [S3 File Format](#s3-file-format)
-- [PM2 Process Management](#pm2-process-management)
 - [Troubleshooting](#troubleshooting)
-- [Security Considerations](#security-considerations)
 
 ---
 
@@ -51,41 +47,41 @@ The platform collects SAP system metrics via T-Codes and makes them visible in G
 
 1. **SAP ABAP** exports T-Code data as JSON files to **Amazon S3**.
    - File naming: `{TCODE}_{ISO_TIMESTAMP}.json` (e.g. `AL08_2026-07-27T06-29-13.json`)
+   - Each T-Code has its own JSON schema with specific field names.
    - Multiple files per T-Code may exist; the exporter always processes the **latest** file by `LastModified`.
 
-2. The **Node.js Prometheus Exporter** runs on a schedule (each Prometheus scrape):
-   - Connects to S3
-   - Lists all objects
+2. The **Node.js Prometheus Exporter** runs on each Prometheus scrape:
+   - Lists all S3 objects
    - Groups files by T-Code
    - Selects only the **latest** file per T-Code
-   - Downloads and parses the JSON
-   - Converts every numeric value into a **Prometheus Gauge** metric
+   - Downloads and parses the JSON using **T-Code-specific collectors**
+   - Converts data into **meaningful Prometheus Gauge metrics** (no generic walker)
    - Exposes all metrics at the `/metrics` endpoint
 
-3. **Prometheus** scrapes the exporter every 30 seconds.
+3. **Prometheus** scrapes the exporter every 60 seconds.
 
-4. **Grafana** visualises the metrics on a pre-configured dashboard with 30-second auto-refresh.
+4. **Grafana** visualises the metrics on auto-provisioned dashboards.
 
 ### Key Design Decisions
 
-- ✅ **Dynamic & Future-Proof** — Adding new T-Codes requires **zero code changes**. The exporter auto-discovers T-Codes from S3 file names.
-- ✅ **Resilient** — Invalid JSON files are skipped; remaining T-Codes still get processed.
-- ✅ **Scalable** — Files are downloaded in parallel using `Promise.all()`.
-- ✅ **Observable** — Structured logging via Pino with levels for dev and production.
+- ✅ **No generic parser** — Each T-Code has a dedicated collector that knows the exact JSON schema
+- ✅ **Real JSON field names** — Parsers use actual field names (e.g. `WP_TYP`, `WP_STATUS`, `syuser`, `USER_ID`)
+- ✅ **No fake metrics** — Every metric directly maps to values from the JSON payload
+- ✅ **Dynamic labels** — Per-client, per-user, per-table breakdowns from real data
+- ✅ **Resilient** — Invalid JSON files are skipped; remaining T-Codes still get processed
+- ✅ **No TimescaleDB / DB Bridge** — Exporter is the **sole** source of metrics
 
 ---
 
 ## Supported T-Codes
 
-| T-Code | Description          | Metrics Collected           |
-|--------|----------------------|-----------------------------|
-| AL08   | User Activity        | Active, Logged, Locked Users |
-| SM50   | Work Processes       | Running, Waiting, Stopped    |
-| SM12   | Lock Management      | Lock Entries, Waiting, Failed Locks |
-| ST22   | Runtime Errors       | Total Dumps, Today's, Critical |
-| ST06   | OS & Hardware        | CPU, Memory, Disk, Swap Usage |
-
-Any future T-Code uploaded to S3 with the correct filename format is automatically discovered.
+| T-Code | Description          | JSON Array Key |
+|--------|----------------------|----------------|
+| AL08   | User Activity        | `data`, `sessions` |
+| SM12   | Lock Management      | `data`, `locks` |
+| SM50   | Work Processes       | `data`, `work_processes` |
+| ST22   | Runtime Errors       | `data`, `dumps` |
+| ST06   | OS & Hardware        | (nested object, no array) |
 
 ---
 
@@ -97,34 +93,9 @@ Any future T-Code uploaded to S3 with the correct filename format is automatical
 - **Prometheus** (included in Docker setup)
 - **Grafana** (included in Docker setup)
 
-### Required IAM Permissions
-
-The AWS credentials must have the following permissions on the S3 bucket:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:ListBucket",
-        "s3:GetObject"
-      ],
-      "Resource": [
-        "arn:aws:s3:::mkill",
-        "arn:aws:s3:::mkill/*"
-      ]
-    }
-  ]
-}
-```
-
 ---
 
 ## Quick Start (Docker)
-
-The fastest way to get everything running is with Docker Compose.
 
 ### 1. Clone & Configure
 
@@ -144,31 +115,32 @@ Set your AWS credentials:
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-S3_BUCKET_NAME=mkill
+S3_BUCKET_NAME=my-sap-bucket
 ```
 
 ### 3. Start All Services
 
 ```bash
-docker compose up -d
+docker compose down --remove-orphans
+docker compose up --build -d
 ```
 
 This starts three containers:
 
-| Service        | Port | URL                          |
-|----------------|------|------------------------------|
-| SAP Exporter   | 9105 | http://localhost:9105/metrics |
-| Prometheus     | 9090 | http://localhost:9090        |
-| Grafana        | 3000 | http://localhost:3000        |
+| Service        | Internal Port | External Port | URL                          |
+|----------------|---------------|---------------|------------------------------|
+| SAP Exporter   | 9105          | 9106          | http://localhost:9106/metrics |
+| Prometheus     | 9090          | 9090          | http://localhost:9090         |
+| Grafana        | 3000          | 3000          | http://localhost:3000         |
 
 ### 4. Verify
 
 ```bash
 # Check exporter health
-curl http://localhost:9105/health
+curl http://localhost:9106/health
 
 # View Prometheus metrics
-curl http://localhost:9105/metrics
+curl http://localhost:9106/metrics | grep sap_
 
 # Check Prometheus targets
 curl http://localhost:9090/api/v1/targets
@@ -178,315 +150,128 @@ curl http://localhost:9090/api/v1/targets
 
 1. Browse to **http://localhost:3000**
 2. Login: `admin` / `admin` (change in `.env`!)
-3. The **SAP Runtime Monitoring** dashboard is auto-provisioned.
-4. Navigate to **Dashboards → SAP Runtime Monitoring**.
+3. Navigate to **Dashboards → SAP** folder
+4. Open **SAP Exporter Overview** or **SAP Monitoring Dashboard**
 
 ---
 
-## Manual Deployment (Ubuntu / EC2)
+## Supported Metrics
 
-### 1. Install Node.js 20 LTS
+### AL08 — Logged-On Users
 
-```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_al08_logged_users` | — | Unique logged-on users |
+| `sap_al08_total_sessions` | — | Total active sessions |
+| `sap_al08_gui_users` | — | GUI users (type A) |
+| `sap_al08_background_users` | — | Background users (type B) |
+| `sap_al08_rfc_users` | — | RFC users (type C) |
+| `sap_al08_client_count` | `client` | Users per client |
+| `sap_al08_tcode_count` | `tcode` | Users per transaction |
+| `sap_al08_user_count` | `user` | Sessions per user |
+| `sap_al08_terminal_count` | `terminal` | Sessions per terminal |
+| `sap_al08_host_count` | `host` | Sessions per host |
 
-node --version   # v20.x.x
-npm --version    # 10.x.x
-```
+### SM12 — Lock Entries
 
-### 2. Clone & Install
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_sm12_total_locks` | — | Total lock entries |
+| `sap_sm12_unique_users` | — | Unique users holding locks |
+| `sap_sm12_locked_tables` | — | Unique locked tables |
+| `sap_sm12_exclusive_locks` | — | Exclusive locks (E/X) |
+| `sap_sm12_shared_locks` | — | Shared locks (S) |
+| `sap_sm12_table_count` | `table` | Locks per table |
+| `sap_sm12_user_count` | `user` | Locks per user |
+| `sap_sm12_lock_mode_count` | `lock_mode` | Locks per mode |
+| `sap_sm12_client_count` | `client` | Locks per client |
 
-```bash
-git clone <repo-url> sap-monitor
-cd sap-monitor/exporter
-npm install --production
-```
+### SM50 — Work Processes
 
-### 3. Configure Environment
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_sm50_total_wp` | — | Total work processes |
+| `sap_sm50_running_wp` | — | Running work processes |
+| `sap_sm50_waiting_wp` | — | Waiting work processes |
+| `sap_sm50_finished_wp` | — | Finished work processes |
+| `sap_sm50_dialog_wp` | — | Dialog (DIA) work processes |
+| `sap_sm50_background_wp` | — | Background (BTC) work processes |
+| `sap_sm50_update_wp` | — | Update (UPD) work processes |
+| `sap_sm50_spool_wp` | — | Spool (SPO) work processes |
+| `sap_sm50_enqueue_wp` | — | Enqueue (ENQ) work processes |
+| `sap_sm50_stopped_wp` | — | Stopped work processes |
+| `sap_sm50_cpu_seconds` | `type` | CPU seconds by WP type |
+| `sap_sm50_status_count` | `status` | WPs per status |
+| `sap_sm50_type_count` | `type` | WPs per type |
+| `sap_sm50_user_count` | `user` | WPs per user |
+| `sap_sm50_client_count` | `client` | WPs per client |
 
-```bash
-cp .env.example .env
-nano .env   # Fill in AWS credentials
-```
+### ST22 — ABAP Runtime Errors
 
-### 4. Run the Exporter
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_st22_total_dumps` | — | Total runtime errors (dumps) |
+| `sap_st22_today_dumps` | — | Today's dumps |
+| `sap_st22_critical_dumps` | — | Critical dumps |
+| `sap_st22_dump_type_count` | `dump_type` | Dumps per type |
+| `sap_st22_program_count` | `program` | Dumps per program |
+| `sap_st22_user_count` | `user` | Dumps per user |
+| `sap_st22_host_count` | `host` | Dumps per host |
+| `sap_st22_client_count` | `client` | Dumps per client |
+| `sap_st22_error_code_count` | `error_code` | Dumps per error code |
 
-**Option A: Direct Node (for testing)**
+### ST06 — System Performance
 
-```bash
-node src/index.js
-```
-
-**Option B: PM2 (recommended for production)**
-
-```bash
-# Install PM2 globally
-sudo npm install -g pm2
-
-# Start with PM2
-pm2 start ecosystem.config.js
-
-# Save process list for auto-restart
-pm2 startup
-pm2 save
-```
-
-### 5. Install Prometheus
-
-```bash
-# Download Prometheus
-wget https://github.com/prometheus/prometheus/releases/download/v2.53.0/prometheus-2.53.0.linux-amd64.tar.gz
-tar xzf prometheus-2.53.0.linux-amd64.tar.gz
-sudo mv prometheus-2.53.0.linux-amd64 /opt/prometheus
-
-# Copy configuration
-sudo cp ../prometheus/prometheus.yml /opt/prometheus/
-
-# Create systemd service
-sudo tee /etc/systemd/system/prometheus.service << 'EOF'
-[Unit]
-Description=Prometheus
-Wants=network-online.target
-After=network-online.target
-
-[Service]
-User=prometheus
-Group=prometheus
-Type=simple
-ExecStart=/opt/prometheus/prometheus \
-  --config.file=/opt/prometheus/prometheus.yml \
-  --storage.tsdb.path=/var/lib/prometheus \
-  --web.console.libraries=/opt/prometheus/console_libraries \
-  --web.console.templates=/opt/prometheus/consoles \
-  --storage.tsdb.retention.time=30d
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Create user and directories
-sudo useradd --no-create-home --shell /bin/false prometheus
-sudo mkdir -p /var/lib/prometheus
-sudo chown -R prometheus:prometheus /opt/prometheus /var/lib/prometheus
-
-# Start Prometheus
-sudo systemctl daemon-reload
-sudo systemctl enable prometheus
-sudo systemctl start prometheus
-```
-
-**Important**: When running without Docker, update `prometheus.yml` targets from `sap-exporter:9105` to `localhost:9105`:
-
-```yaml
-static_configs:
-  - targets: ["localhost:9105"]
-    labels:
-      service: "sap-monitor"
-```
-
-### 6. Install Grafana
-
-```bash
-# Add Grafana repository
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
-wget -q -O- https://packages.grafana.com/gpg.key | sudo apt-key add -
-sudo apt-get update
-sudo apt-get install -y grafana
-
-# Copy dashboard and provisioning
-sudo mkdir -p /etc/grafana/provisioning/datasources
-sudo mkdir -p /etc/grafana/provisioning/dashboards
-sudo cp ../grafana/dashboard.json /var/lib/grafana/dashboards/
-sudo cp ../grafana/provisioning/datasources/prometheus.yml /etc/grafana/provisioning/datasources/
-sudo cp ../grafana/provisioning/dashboards/sap.yml /etc/grafana/provisioning/dashboards/
-
-# Update datasource URL for non-Docker setup (change to localhost)
-sudo sed -i 's|http://sap-prometheus:9090|http://localhost:9090|g' \
-  /etc/grafana/provisioning/datasources/prometheus.yml
-
-# Start Grafana
-sudo systemctl enable grafana-server
-sudo systemctl start grafana-server
-```
-
-### 7. Open Security Group (EC2)
-
-If on EC2, ensure these inbound rules exist:
-
-| Port | Source       | Purpose           |
-|------|-------------|--------------------|
-| 9105 | Prometheus SG | Exporter scrape   |
-| 9090 | Your IP     | Prometheus UI      |
-| 3000 | Your IP     | Grafana UI         |
-
----
-
-## Configuration
-
-All configuration is via environment variables (see [`.env.example`](.env.example)):
-
-| Variable                | Default         | Description                         |
-|-------------------------|-----------------|-------------------------------------|
-| `AWS_REGION`            | `us-east-1`     | AWS region                         |
-| `AWS_ACCESS_KEY_ID`     | —               | AWS access key **(required)**       |
-| `AWS_SECRET_ACCESS_KEY` | —               | AWS secret key **(required)**       |
-| `AWS_SESSION_TOKEN`     | —               | Temporary STS token                 |
-| `S3_BUCKET_NAME`        | `mkill`         | S3 bucket name                      |
-| `AWS_ENDPOINT`          | —               | Custom S3 endpoint                  |
-| `EXPORTER_PORT`         | `9105`          | HTTP server port                    |
-| `EXPORTER_HOST`         | `0.0.0.0`       | HTTP bind address                   |
-| `METRICS_PREFIX`        | `sap`           | Prometheus metric name prefix       |
-| `METRICS_PATH`          | `/metrics`      | Metrics HTTP path                   |
-| `S3_REQUEST_TIMEOUT`    | `10000`         | S3 request timeout (ms)             |
-| `S3_MAX_RETRIES`        | `3`             | S3 operation retries                |
-| `LOG_LEVEL`             | `info`          | Log level (trace/debug/info/warn)   |
-
----
-
-## Exporter Details
-
-### Metrics Endpoint
-
-```
-GET /metrics
-```
-
-Returns Prometheus-formatted metrics with `Content-Type: text/plain; version=0.0.4; charset=utf-8`.
-
-### Health Endpoint
-
-```
-GET /health
-```
-
-Returns a JSON health check:
-
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-07-27T12:00:00.000Z",
-  "uptime": 3600
-}
-```
-
-### Scrape Cycle
-
-On every Prometheus scrape of `/metrics`:
-
-1. List all objects in the S3 bucket
-2. Group files by T-Code (extracted from filename prefix)
-3. For each T-Code, select the file with the newest `LastModified`
-4. Reset all previously-registered metrics
-5. Download latest files in parallel
-6. Parse JSON and register Gauge metrics dynamically
-7. Return all metrics
-
-### Metric Naming Convention
-
-Metrics follow the pattern:
-
-```
-sap_{tcode_lowercase}_{json_path_snake_case}
-```
-
-For example, given `AL08` JSON:
-```json
-{
-  "active_users": 42,
-  "logged_users": 100,
-  "locked_users": 3
-}
-```
-
-The exporter produces:
-```
-# HELP sap_al08_active_users SAP metric: sap_al08_active_users
-# TYPE sap_al08_active_users gauge
-sap_al08_active_users 42
-
-# HELP sap_al08_logged_users SAP metric: sap_al08_logged_users
-# TYPE sap_al08_logged_users gauge
-sap_al08_logged_users 100
-
-# HELP sap_al08_locked_users SAP metric: sap_al08_locked_users
-# TYPE sap_al08_locked_users gauge
-sap_al08_locked_users 3
-```
-
-Nested JSON is flattened with underscores:
-```json
-{
-  "cpu": {
-    "usage_percent": 45.2
-  }
-}
-```
-
-Produces: `sap_st06_cpu_usage_percent`
-
----
-
-## Prometheus Configuration
-
-The [`prometheus/prometheus.yml`](prometheus/prometheus.yml) file configures:
-
-```yaml
-scrape_configs:
-  - job_name: "sap-monitor"
-    scrape_interval: 30s
-    scrape_timeout: 10s
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["sap-exporter:9105"]   # Docker, or "localhost:9105" for bare metal
-```
-
-Key settings:
-
-| Setting            | Value     | Notes                               |
-|--------------------|-----------|-------------------------------------|
-| scrape_interval    | `30s`     | Matches SAP data upload frequency   |
-| scrape_timeout     | `10s`     | Enough for S3 download + parse      |
-| retention.time     | `30d`     | Retain 30 days of metrics           |
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_st06_cpu_user` | `cpu` | CPU user % (avg or per-core) |
+| `sap_st06_cpu_system` | `cpu` | CPU system % |
+| `sap_st06_cpu_idle` | `cpu` | CPU idle % |
+| `sap_st06_cpu_wait` | `cpu` | CPU I/O wait % |
+| `sap_st06_memory_used_bytes` | — | Used memory (bytes) |
+| `sap_st06_memory_free_bytes` | — | Free memory (bytes) |
+| `sap_st06_memory_total_bytes` | — | Total memory (bytes) |
+| `sap_st06_memory_usage_pct` | — | Memory usage % |
+| `sap_st06_swap_used_bytes` | — | Used swap (bytes) |
+| `sap_st06_swap_free_bytes` | — | Free swap (bytes) |
+| `sap_st06_swap_total_bytes` | — | Total swap (bytes) |
+| `sap_st06_swap_usage_pct` | — | Swap usage % |
+| `sap_st06_disk_utilization` | — | Disk utilization % |
+| `sap_st06_page_in_rate` | — | Page-in rate |
+| `sap_st06_page_out_rate` | — | Page-out rate |
+| `sap_st06_network_in_bytes` | — | Network in (bytes) |
+| `sap_st06_network_out_bytes` | — | Network out (bytes) |
 
 ---
 
 ## Grafana Dashboard
 
-The dashboard **SAP Runtime Monitoring** (`grafana/dashboard.json`) is auto-provisioned with:
+Two dashboards are auto-provisioned:
 
-| Row  | T-Code | Panels                   | Panel Types     |
-|------|--------|--------------------------|-----------------|
-| 1    | AL08   | Active, Logged, Locked   | Stat            |
-| 2    | SM50   | Running, Waiting, Stopped | Gauge           |
-| 3    | SM12   | Entries, Waiting, Failed  | Stat            |
-| 4    | ST22   | Total, Today's, Critical  | Stat            |
-| 5    | ST06   | CPU, Memory, Disk, Swap  | Gauge           |
+### 1. SAP Exporter Overview
+Quick overview with summary stats and key panels per T-Code:
+- Exporter health + T-Code summary stats
+- AL08: User types, top clients, transactions, hosts
+- SM12: Lock mode pie, top tables, users, clients
+- SM50: WP status pie, types, CPU seconds, clients
+- ST22: Dump types, programs, users, hosts, error codes
+- ST06: CPU/memory/disk gauges, paging, network, swap
 
-- **Auto-refresh**: 30 seconds
-- **Theme**: Dark (compatible with dark mode)
-- **Thresholds**: Colour-coded (green / orange / red) for quick health assessment
+### 2. SAP Monitoring Dashboard
+Full-depth monitoring with trend data:
+- Summary row with all key stats
+- AL08: User trend time series, clients/transactions/hosts/terminals
+- SM12: Lock trend, tables, modes, clients, users
+- SM50: WP stats per type, status/type charts, CPU, clients, users
+- ST22: Dump trend, programs, types, users, hosts, error codes
+- ST06: All system performance gauges and trends
 
----
-
-## Adding New T-Codes
-
-**No code changes required.** To add a new T-Code:
-
-1. Configure your SAP ABAP system to export JSON files named `{TCODE}_{ISO_TIMESTAMP}.json`
-2. Upload them to the same S3 bucket
-3. On the next Prometheus scrape, the exporter automatically:
-   - Discovers the new T-Code
-   - Downloads the latest file
-   - Creates metrics named `sap_{tcode}_{metric_path}`
-4. **Manually add panels** to the Grafana dashboard to visualise the new metrics
-
-Example: Adding a hypothetical `ST03` T-Code
-
-1. Upload `ST03_2026-07-27T12-00-00.json` to S3
-2. The exporter creates `sap_st03_*` metrics
-3. In Grafana, add new panels to the dashboard referencing `sap_st03_*`
+### Panel Types Used
+- **Stat** — Key performance indicators with thresholds
+- **Gauge** — CPU, memory, disk utilization
+- **Time Series** — Trends over time
+- **Bar Chart** — Top-N distributions
+- **Pie Chart** — Category distributions
 
 ---
 
@@ -500,54 +285,19 @@ Example: Adding a hypothetical `ST03` T-Code
 
 Example: `AL08_2026-07-27T06-29-13.json`
 
-### JSON Structure
+### JSON Field Names
 
-The exporter recursively walks the JSON tree. Any numeric leaf value becomes a Gauge metric. Example valid JSON:
+Each T-Code uses its own field naming convention. The exporter supports:
 
-```json
-{
-  "active_users": 42,
-  "logged_users": 100,
-  "locked_users": 3,
-  "details": {
-    "max_users": 500,
-    "threshold_pct": 80.5
-  }
-}
-```
+| T-Code | Key Fields |
+|--------|------------|
+| AL08   | `CLIENT`, `USERID`, `TCODE`, `TERMINAL`, `TIME`, `HOSTADR`, `TYPE` |
+| SM12   | `TABLE`, `LOCK_ARG`, `USER_ID`, `GMOD`, `GCLIENT` |
+| SM50   | `WP_TYP`, `WP_STATUS`, `WP_BNAME`, `WP_CPU`, `WP_CLIENT`, `WP_NO`, `WP_REPORT` |
+| ST22   | `dumpid`, `programname`, `syuser`, `syhost`, `sydate`, `syclient`, `sycode`, `errtext` |
+| ST06   | `cpu.{n}.user/system/idle/wait`, `memory.*`, `swap.*`, `disk.*`, `paging.*`, `network.*` |
 
-### Invalid Files
-
-If a JSON file is malformed, the exporter logs an error and continues processing other T-Codes. The scrape cycle does not fail.
-
----
-
-## PM2 Process Management
-
-For production deployments without Docker, use PM2:
-
-```bash
-# Start
-pm2 start ecosystem.config.js
-
-# View logs
-pm2 logs sap-exporter
-
-# Monitor
-pm2 monit
-
-# Restart
-pm2 restart sap-exporter
-
-# Stop
-pm2 stop sap-exporter
-
-# Auto-start on boot
-pm2 startup
-pm2 save
-```
-
-Configuration is in [`exporter/ecosystem.config.js`](exporter/ecosystem.config.js).
+The exporter also provides uppercase fallbacks for all fields.
 
 ---
 
@@ -557,55 +307,41 @@ Configuration is in [`exporter/ecosystem.config.js`](exporter/ecosystem.config.j
 
 ```bash
 # Check logs
-pm2 logs sap-exporter
-# or
-node src/index.js
+docker compose logs sap-exporter
 
-# Verify environment
-node -e "require('./src/config')"
+# Verify AWS credentials
+docker compose exec sap-exporter node -e "require('./src/config')"
 ```
 
 ### No metrics in Prometheus
 
 ```bash
 # Check exporter directly
-curl http://localhost:9105/metrics
+curl http://localhost:9106/metrics | grep sap_
 
 # Check Prometheus targets
 curl http://localhost:9090/api/v1/targets
 
-# Check Prometheus can reach the exporter
-curl http://sap-exporter:9105/metrics   # Docker
-curl http://localhost:9105/metrics       # Bare metal
-```
-
-### S3 permission errors
-
-```bash
-# Verify credentials using AWS CLI
-aws s3 ls s3://mkill/
-
-# Check bucket exists
-aws s3api head-bucket --bucket mkill
+# Verify S3 bucket has JSON files
+aws s3 ls s3://your-bucket/
 ```
 
 ### Grafana shows "No data"
 
 1. Verify Prometheus is scraping the exporter (check Prometheus targets UI)
-2. Ensure the metrics exist: `curl http://localhost:9105/metrics | grep sap_`
-3. Check the Grafana datasource is correctly configured to point to Prometheus
-4. Verify the dashboard PromQL queries match the actual metric names
+2. Ensure the metrics exist: `curl http://localhost:9106/metrics | grep sap_`
+3. Check the Grafana datasource points to `http://prometheus:9090`
+4. Verify the dashboard PromQL queries match the actual metric names (see [Supported Metrics](#supported-metrics))
 
----
+### S3 permission errors
 
-## Security Considerations
+```bash
+# Verify credentials using AWS CLI
+aws s3 ls s3://your-bucket/
 
-- **IAM credentials**: Store in `.env` (gitignored). Never commit to version control.
-- **Least privilege**: The IAM policy should only grant `s3:ListBucket` and `s3:GetObject` on the specific bucket.
-- **Network isolation**: In production, place the exporter in a private subnet. Only Prometheus needs HTTP access to it.
-- **Grafana auth**: Change the default `admin` password immediately. Consider OAuth/OIDC for production.
-- **HTTPS**: Use a reverse proxy (nginx, ALB) to terminate TLS for both Prometheus and Grafana.
-- **Container security**: The Docker image runs as a non-root user (`appuser`).
+# Check bucket exists
+aws s3api head-bucket --bucket your-bucket
+```
 
 ---
 
@@ -620,20 +356,21 @@ sap-monitor/
 │   │   ├── logger.js                # Pino structured logger
 │   │   ├── s3-client.js             # AWS SDK v3 S3 wrapper
 │   │   ├── file-processor.js        # T-Code grouping & latest-file selection
-│   │   ├── json-parser.js           # Dynamic JSON → metrics parser
+│   │   ├── json-parser.js           # T-Code-specific JSON → metrics parsers
 │   │   └── metrics.js               # Prometheus Gauge registry (dynamic)
 │   ├── Dockerfile                   # Multi-stage Docker build
-│   ├── ecosystem.config.js          # PM2 process management
 │   └── package.json
 ├── prometheus/
 │   └── prometheus.yml               # Prometheus scrape configuration
 ├── grafana/
-│   ├── dashboard.json               # SAP Runtime Monitoring dashboard
+│   ├── dashboards/
+│   │   ├── sap-exporter-overview.json       # Overview dashboard
+│   │   └── sap-monitoring-dashboard.json    # Full monitoring dashboard
 │   └── provisioning/
 │       ├── datasources/
-│       │   └── prometheus.yml       # Auto-provisioned datasource
+│       │   └── datasource.yml       # Auto-provisioned datasource
 │       └── dashboards/
-│           └── sap.yml              # Dashboard provider config
+│           └── dashboards.yml       # Dashboard provider config
 ├── docker-compose.yml               # Orchestrates all three services
 ├── .env.example                     # Example environment variables
 ├── .gitignore

@@ -3,52 +3,399 @@
   "__requires": [],
   "title": "SAP Exporter Overview",
   "uid": "sap-exporter-overview",
-  "version": 1,
+  "version": 2,
   "schemaVersion": 36,
   "tags": ["sap", "monitoring"],
   "timezone": "browser",
   "editable": true,
   "refresh": "60s",
-  "time": {
-    "from": "now-6h",
-    "to": "now"
-  },
+  "time": { "from": "now-6h", "to": "now" },
   "timepicker": {
     "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
   },
   "panels": [
     {
-      "title": "SAP Metrics Overview",
-      "type": "stat",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
       "id": 1,
-      "options": {
-        "colorMode": "none",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "values": false
-        },
-        "textMode": "auto"
-      },
+      "title": "Exporter Status",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "custom": {
-            "displayMode": "list"
-          }
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "red", "value": 0 }, { "color": "green", "value": 1 }] },
+          "color": { "mode": "thresholds" },
+          "mappings": [{ "type": "value", "options": { "0": { "text": "Down", "color": "red" }, "1": { "text": "Up", "color": "green" } } }]
         }
       },
-      "pluginVersion": "8.5.0",
+      "targets": [{ "expr": "up{job=\"sap-exporter\"}", "legendFormat": "Status", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 2,
+      "title": "Users Logged",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 200 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_al08_logged_users", "legendFormat": "Users", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 3,
+      "title": "Total Locks",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 500 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_sm12_total_locks", "legendFormat": "Locks", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 4,
+      "title": "Work Processes",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 9, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 100 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_sm50_total_wp", "legendFormat": "WPs", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 5,
+      "title": "ABAP Dumps",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_st22_total_dumps", "legendFormat": "Dumps", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 6,
+      "title": "CPU Idle",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true, "orientation": "auto" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "red", "value": 0 }, { "color": "yellow", "value": 30 }, { "color": "green", "value": 60 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "avg(sap_st06_cpu_idle)", "legendFormat": "Idle", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 7,
+      "title": "Memory Used %",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true, "orientation": "auto" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 75 }, { "color": "red", "value": 90 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_st06_memory_usage_pct", "legendFormat": "Memory", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+    {
+      "id": 8,
+      "title": "Disk Util %",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true, "orientation": "auto" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_st06_disk_utilization", "legendFormat": "Disk", "refId": "A" }],
+      "pluginVersion": "8.5.0"
+    },
+
+    {
+      "id": 10,
+      "title": "AL08 — Logged-On Users",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 4 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "title": "User Types",
+      "type": "barchart",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
       "targets": [
-        {
-          "expr": "count(sap_node_up)",
-          "legendFormat": "Up",
-          "refId": "A"
-        }
+        { "expr": "sap_al08_gui_users", "legendFormat": "GUI", "refId": "A" },
+        { "expr": "sap_al08_background_users", "legendFormat": "Background", "refId": "B" },
+        { "expr": "sap_al08_rfc_users", "legendFormat": "RFC", "refId": "C" }
       ]
+    },
+    {
+      "id": 12,
+      "title": "Top Clients",
+      "type": "barchart",
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_al08_client_count)", "legendFormat": "{{client}}", "refId": "A" }]
+    },
+    {
+      "id": 13,
+      "title": "Top Transactions",
+      "type": "barchart",
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_al08_tcode_count)", "legendFormat": "{{tcode}}", "refId": "A" }]
+    },
+    {
+      "id": 14,
+      "title": "Top Hosts",
+      "type": "barchart",
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_al08_host_count)", "legendFormat": "{{host}}", "refId": "A" }]
+    },
+
+    {
+      "id": 20,
+      "title": "SM12 — Lock Entries",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "title": "Lock Mode Distribution",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "pieType": "pie", "legend": { "displayMode": "list", "placement": "right" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_sm12_lock_mode_count", "legendFormat": "{{lock_mode}}", "refId": "A" }]
+    },
+    {
+      "id": 22,
+      "title": "Top Locked Tables",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_sm12_table_count)", "legendFormat": "{{table}}", "refId": "A" }]
+    },
+    {
+      "id": 23,
+      "title": "Top Users (Locks)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_sm12_user_count)", "legendFormat": "{{user}}", "refId": "A" }]
+    },
+    {
+      "id": 24,
+      "title": "Locks by Client",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_sm12_client_count", "legendFormat": "{{client}}", "refId": "A" }]
+    },
+
+    {
+      "id": 30,
+      "title": "SM50 — Work Process Status",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "title": "WP Status Distribution",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "pieType": "pie", "legend": { "displayMode": "list", "placement": "right" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_sm50_status_count", "legendFormat": "{{status}}", "refId": "A" }]
+    },
+    {
+      "id": 32,
+      "title": "WP Types",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_sm50_type_count", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+    {
+      "id": 33,
+      "title": "CPU Seconds by Type",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "expr": "sap_sm50_cpu_seconds", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+    {
+      "id": 34,
+      "title": "WPs by Client",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_sm50_client_count", "legendFormat": "{{client}}", "refId": "A" }]
+    },
+
+    {
+      "id": 40,
+      "title": "ST22 — ABAP Dumps",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "title": "Dump Type Distribution",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "pieType": "pie", "legend": { "displayMode": "list", "placement": "right" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_st22_dump_type_count", "legendFormat": "{{dump_type}}", "refId": "A" }]
+    },
+    {
+      "id": 42,
+      "title": "Dumps by Program",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_st22_program_count)", "legendFormat": "{{program}}", "refId": "A" }]
+    },
+    {
+      "id": 43,
+      "title": "Dumps by User",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_st22_user_count)", "legendFormat": "{{user}}", "refId": "A" }]
+    },
+    {
+      "id": 44,
+      "title": "Dumps by Host",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "topk(10, sap_st22_host_count)", "legendFormat": "{{host}}", "refId": "A" }]
+    },
+
+    {
+      "id": 50,
+      "title": "ST06 — System Performance",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "collapsed": false
+    },
+    {
+      "id": 51,
+      "title": "CPU Trend",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "color": { "mode": "palette-classic" }, "custom": { "lineInterpolation": "smooth", "fillOpacity": 20 } } },
+      "targets": [
+        { "expr": "avg(sap_st06_cpu_idle)", "legendFormat": "Idle", "refId": "A" },
+        { "expr": "avg(sap_st06_cpu_user)", "legendFormat": "User", "refId": "B" },
+        { "expr": "avg(sap_st06_cpu_system)", "legendFormat": "System", "refId": "C" },
+        { "expr": "avg(sap_st06_cpu_wait)", "legendFormat": "I/O Wait", "refId": "D" }
+      ]
+    },
+    {
+      "id": 52,
+      "title": "Memory (GB)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "palette-classic" }, "custom": { "lineInterpolation": "smooth", "fillOpacity": 15 } } },
+      "targets": [
+        { "expr": "sap_st06_memory_used_bytes", "legendFormat": "Used", "refId": "A" },
+        { "expr": "sap_st06_memory_free_bytes", "legendFormat": "Free", "refId": "B" },
+        { "expr": "sap_st06_memory_total_bytes", "legendFormat": "Total", "refId": "C" }
+      ]
+    },
+    {
+      "id": 53,
+      "title": "Paging Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" }, "custom": { "lineInterpolation": "smooth", "fillOpacity": 15 } } },
+      "targets": [
+        { "expr": "sap_st06_page_in_rate", "legendFormat": "Page In", "refId": "A" },
+        { "expr": "sap_st06_page_out_rate", "legendFormat": "Page Out", "refId": "B" }
+      ]
+    },
+    {
+      "id": 54,
+      "title": "Network (bytes)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "palette-classic" }, "custom": { "lineInterpolation": "smooth", "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "sap_st06_network_in_bytes", "legendFormat": "In", "refId": "A" },
+        { "expr": "sap_st06_network_out_bytes", "legendFormat": "Out", "refId": "B" }
+      ]
+    },
+    {
+      "id": 55,
+      "title": "Swap Usage %",
+      "type": "gauge",
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdMarkers": true, "orientation": "auto" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 80 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "sap_st06_swap_usage_pct", "legendFormat": "Swap", "refId": "A" }]
+    },
+    {
+      "id": 56,
+      "title": "Per-CPU User %",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 54 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "color": { "mode": "palette-classic" }, "custom": { "lineInterpolation": "smooth", "fillOpacity": 10 } } },
+      "targets": [{ "expr": "sap_st06_cpu_user", "legendFormat": "CPU {{cpu}}", "refId": "A" }]
+    },
+    {
+      "id": 57,
+      "title": "Error Codes (ST22)",
+      "type": "piechart",
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "pieType": "pie", "legend": { "displayMode": "list", "placement": "right" } },
+      "fieldConfig": { "defaults": {} },
+      "targets": [{ "expr": "sap_st22_error_code_count", "legendFormat": "{{error_code}}", "refId": "A" }]
     }
   ]
 }

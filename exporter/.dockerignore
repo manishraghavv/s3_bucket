@@ -36,10 +36,6 @@ Thumbs.db
 logs/
 *.log
 
-# ── PM2 process files (not needed in Docker) ─────────────────────────────
-ecosystem.config.js
-ecosystem.config.*.js
-
 # ── Test and lint (not needed in production image) ───────────────────────
 tests/
 test/

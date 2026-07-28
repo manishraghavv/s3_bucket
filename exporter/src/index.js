@@ -60,6 +60,21 @@ async function verifyAwsCredentials() {
 // Disable Express fingerprinting
 app.set('x-powered-by', false);
 
+// ── Prometheus metrics for exporter statistics ─────────────────────────
+// These are emitted as part of the /metrics endpoint, separate from SAP data.
+
+// We expose exporter stats as extra gauges attached at the end of updateMetrics().
+// Stats are set before each metrics response.
+let lastScrapeDuration = 0;
+let lastScrapeSuccessCount = 0;
+let lastScrapeErrorCount = 0;
+let lastScrapeTotalTcodes = 0;
+let lastScrapeTotalMetrics = 0;
+let lastScrapeTimestamp = Date.now();
+let lastJsonKey = '';
+let lastJsonTcode = '';
+let lastJsonAgeSeconds = 0;
+
 // ── Health endpoint ─────────────────────────────────────────────────────
 //
 // Returns 200 + { status: 'UP' } when the application is fully initialised
@@ -84,6 +99,15 @@ app.get(config.server.healthPath, (_req, res) => {
     checks,
     timestamp: new Date().toISOString(),
     uptime: Math.floor(process.uptime()),
+    lastScrape: {
+      durationMs: lastScrapeDuration,
+      tcodesFound: lastScrapeTotalTcodes,
+      successCount: lastScrapeSuccessCount,
+      errorCount: lastScrapeErrorCount,
+      metricsGenerated: lastScrapeTotalMetrics,
+      lastFile: lastJsonKey,
+      lastTcode: lastJsonTcode,
+    },
   };
 
   res.status(healthy ? 200 : 503).json(body);
@@ -198,25 +222,43 @@ app.get(config.server.metricsPath, async (_req, res) => {
 
     await Promise.all(downloadPromises);
 
-    // ── Register ALL metrics in a single updateMetrics() call ──
+    // ── Register ALL SAP metrics in a single updateMetrics() call ──
     if (allMetrics.length > 0) {
       updateMetrics(allMetrics);
-      logger.info(
-        {
-          tcodesProcessed: successCount,
-          errors: errorCount,
-          totalMetrics: allMetrics.length,
-        },
-        'All metrics registered',
-      );
-    } else {
-      logger.warn('No metrics collected from any T-Code');
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // STAGE 5 — Serve the aggregated metrics
-    // ═══════════════════════════════════════════════════════════════════
+    // ── Update exporter stats for health endpoint and Prometheus ──
     const duration = Date.now() - startTime;
+    lastScrapeDuration = duration;
+    lastScrapeSuccessCount = successCount;
+    lastScrapeErrorCount = errorCount;
+    lastScrapeTotalTcodes = latestFiles.size;
+    lastScrapeTotalMetrics = allMetrics.length;
+    lastScrapeTimestamp = Date.now();
+
+    // Track latest file info from the last tcode in the list
+    if (tcodeEntries.length > 0) {
+      const [tcode, info] = tcodeEntries[tcodeEntries.length - 1];
+      lastJsonKey = info.key;
+      lastJsonTcode = tcode;
+      lastJsonAgeSeconds = info.lastModified
+        ? Math.floor((Date.now() - info.lastModified.getTime()) / 1000)
+        : 0;
+    }
+
+    // ── Emit exporter stats as Prometheus metrics ──
+    const statsMetrics = [
+      { fullName: `${config.metrics.prefix}_exporter_scrape_duration_seconds`, value: parseFloat((duration / 1000).toFixed(3)), labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_scrape_success_total`, value: successCount, labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_scrape_error_total`, value: errorCount, labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_scrape_tcodes_total`, value: latestFiles.size, labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_scrape_metrics_total`, value: allMetrics.length, labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_scrape_timestamp_seconds`, value: parseFloat((lastScrapeTimestamp / 1000).toFixed(3)), labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_json_age_seconds`, value: lastJsonAgeSeconds, labels: {} },
+      { fullName: `${config.metrics.prefix}_exporter_uptime_seconds`, value: Math.floor(process.uptime()), labels: {} },
+    ];
+    updateMetrics(statsMetrics);
+
     logger.info(
       {
         tcodesFound: latestFiles.size,

@@ -9,10 +9,17 @@
     "lint": "eslint src/",
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
-  "keywords": ["sap", "prometheus", "monitoring", "s3", "exporter"],
+  "keywords": [
+    "sap",
+    "prometheus",
+    "monitoring",
+    "s3",
+    "exporter"
+  ],
   "license": "MIT",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
+    "@peculiar/x509": "^1.14.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "pino": "^9.2.0",
@@ -24,6 +31,6 @@
     "pino-pretty": "^11.2.1"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }

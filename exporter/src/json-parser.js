@@ -1,5 +1,6 @@
 'use strict';
 
+const { X509Certificate } = require('@peculiar/x509');
 const logger = require('./logger');
 
 /**
@@ -67,22 +68,98 @@ function sumField(rows, fields) {
   return parseFloat(total.toFixed(3));
 }
 
+/**
+ * Read a numeric field from a row using a list of candidate keys.
+ * Returns null when the field is absent or non-numeric.
+ */
+function numField(row, fields) {
+  const fieldList = Array.isArray(fields) ? fields : [fields];
+  for (const f of fieldList) {
+    const raw = row[f];
+    if (raw === undefined || raw === null || raw === '') continue;
+    const n = parseFloat(String(raw).trim());
+    if (!Number.isNaN(n) && Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/**
+ * First non-empty string value among candidate keys.
+ */
+function strField(row, fields) {
+  const fieldList = Array.isArray(fields) ? fields : [fields];
+  for (const f of fieldList) {
+    const raw = row[f];
+    if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+      return String(raw).trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * Normalise a status-like value for comparison: uppercase, trimmed.
+ */
+function norm(s) {
+  return String(s || '').trim().toUpperCase();
+}
+
+/**
+ * Parse an SAP timestamp like "20260804103749" (YYYYMMDDHHMMSS).
+ * Returns a Date or null.
+ */
+function parseSapTimestamp(value) {
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim();
+  const m = s.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/);
+  if (!m) return null;
+  const d = new Date(
+    parseInt(m[1], 10),
+    parseInt(m[2], 10) - 1,
+    parseInt(m[3], 10),
+    parseInt(m[4] || 0, 10),
+    parseInt(m[5] || 0, 10),
+    parseInt(m[6] || 0, 10),
+  );
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function extractRows(parsed, tcode) {
+  // Returns null when no data-array key matched at all (caller then falls back
+  // to treating the whole object as a single record). Returns an empty array
+  // when a matching key exists but is empty (no records — caller emits nothing).
   const ARRAY_KEYS = {
     AL08: ['data', 'DATA', 'sessions', 'SESSIONS', 'users', 'USERS', 'entries'],
     SM12: ['data', 'DATA', 'locks', 'LOCKS', 'entries'],
     SM50: ['data', 'DATA', 'work_processes', 'WORK_PROCESSES', 'workProcesses', 'wps', 'WPS', 'entries'],
     ST22: ['data', 'DATA', 'dumps', 'DUMPS', 'dump', 'st22_records', 'ST22_RECORDS', 'records', 'RECORDS', 'entries'],
+    DB02: ['dbInfo', 'DB_INFO', 'data', 'DATA', 'tablespaces', 'TABLESPACES', 'entries'],
+    SM13: ['data', 'DATA', 'updates', 'UPDATES', 'update_requests', 'entries'],
+    SM20: ['data', 'DATA', 'events', 'EVENTS', 'audit_log', 'AUDIT_LOG', 'entries'],
+    SM21: ['data', 'DATA', 'messages', 'MESSAGES', 'system_log', 'SYSTEM_LOG', 'records', 'RECORDS', 'entries'],
+    SM37: ['data', 'DATA', 'jobs', 'JOBS', 'entries'],
+    SP01: ['data', 'DATA', 'spool', 'SPOOL', 'requests', 'REQUESTS', 'output', 'OUTPUT', 'entries'],
+    ST02: ['data', 'DATA', 'buffers', 'BUFFERS', 'entries'],
+    ST03N: ['data', 'DATA', 'workload', 'WORKLOAD', 'entries'],
+    STRUST: ['data', 'DATA', 'certificates', 'CERTIFICATES', 'entries'],
   };
 
   const keys = ARRAY_KEYS[tcode] || ['data', 'DATA', 'entries'];
+  let sawEmptyArray = false;
   for (const key of keys) {
     const arr = parsed[key];
     if (Array.isArray(arr) && arr.length > 0) {
       return arr;
     }
+    if (Array.isArray(arr)) {
+      // A matching key exists but is empty — keep scanning later keys in case
+      // another candidate key (e.g. `locks`) actually holds the records.
+      sawEmptyArray = true;
+    }
   }
-  return [];
+  // null = no data-array key found at all (caller falls back to single-record),
+  // [] = matching key(s) found but empty (caller emits nothing).
+  return sawEmptyArray ? [] : null;
 }
 
 // ── T-Code Collectors ────────────────────────────────────────────────────
@@ -294,7 +371,8 @@ function collectST22(rows, prefix) {
   const today = new Date();
   const todayStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
   const todayDumps = countWhere(rows, (r) => {
-    const d = r.sydate || r.DATE || r.DATUM || r.SYDATE || '';
+    // sydate can arrive as a number (e.g. 20260730) — always coerce to string
+    const d = String(r.sydate || r.DATE || r.DATUM || r.SYDATE || '');
     return d === todayStr || d.startsWith(todayStr);
   });
   results.push({ fullName: `${prefix}_st22_today_dumps`, value: todayDumps, labels: {} });
@@ -369,6 +447,35 @@ function collectST06(parsed, prefix) {
     results.push({ fullName: `${prefix}_st06_cpu_wait`, value: parseFloat(cpu.waitTrue || cpu.wait_true || root.cpu_wait || 0), labels: {} });
   }
 
+  // ── Per-CPU metrics (additive — the averaged CPU metrics above are untouched) ──
+  // Actual ST06 JSON has cpu as an array of per-CPU records with `serialnr` and
+  // userCpu / sysCpu / idleCpu / waitTrue / ldAvgMax / ldAvgMin.
+  // Distinct metric names are used (…_percent / load_average) so the existing
+  // label-less gauges never collide with these labelled series.
+  const cpuRows = Array.isArray(cpu) ? cpu : Object.values(cpu).filter((v) => typeof v === 'object' && v !== null);
+  for (const core of cpuRows) {
+    const labels = { cpu: strField(core, ['serialnr', 'SERIALNR', 'cpu', 'CPU']) };
+    const idle = numField(core, ['idleCpu', 'idle_cpu', 'IDLE_CPU']);
+    const user = numField(core, ['userCpu', 'user_cpu', 'USER_CPU']);
+    const sys = numField(core, ['sysCpu', 'sys_cpu', 'SYS_CPU']);
+    const wait = numField(core, ['waitTrue', 'wait_true', 'WAIT_TRUE']);
+    const ldMax = numField(core, ['ldAvgMax', 'ld_avg_max', 'LDAVGMAX']);
+    const ldMin = numField(core, ['ldAvgMin', 'ld_avg_min', 'LDAVGMIN']);
+
+    if (idle !== null) {
+      results.push({ fullName: `${prefix}_st06_cpu_idle_percent`, value: parseFloat(idle.toFixed(2)), labels });
+      if (idle >= 0 && idle <= 100) {
+        results.push({ fullName: `${prefix}_st06_cpu_usage_percent`, value: parseFloat((100 - idle).toFixed(2)), labels });
+      }
+    }
+    if (user !== null) results.push({ fullName: `${prefix}_st06_cpu_user_percent`, value: parseFloat(user.toFixed(2)), labels });
+    if (sys !== null) results.push({ fullName: `${prefix}_st06_cpu_system_percent`, value: parseFloat(sys.toFixed(2)), labels });
+    if (wait !== null) results.push({ fullName: `${prefix}_st06_cpu_wait_percent`, value: parseFloat(wait.toFixed(2)), labels });
+    if (ldMax !== null || ldMin !== null) {
+      results.push({ fullName: `${prefix}_st06_load_average`, value: ldMax !== null ? ldMax : ldMin, labels });
+    }
+  }
+
   // ── Memory ──
   // Actual fields (camelCase): avgFrMem, avgSwapsz, avgSwapfr, inPgHour, outPgHou
   const mem = root.memory || root.MEMORY || {};
@@ -432,6 +539,579 @@ function collectST06(parsed, prefix) {
   return results;
 }
 
+// ── Additional T-Code Collectors (additive — existing collectors above are untouched) ──
+
+/**
+ * DB02 — Database Overview
+ * Actual JSON: { "dbInfo": [ { name, dbSize, owner, dbid, created, status }, ... ] }
+ * dbSize is a string like "  302080.0 MB". status: "full", "no_recovery", ...
+ */
+function collectDB02(rows, prefix) {
+  const results = [];
+  const dbs = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (dbs.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_db02_database_count`, value: dbs.length, labels: {} });
+
+  let totalSizeMb = 0;
+  const statusCounts = new Map();
+  for (const r of dbs) {
+    const dbName = strField(r, ['name', 'NAME', 'dbname', 'DBNAME']);
+    const owner = strField(r, ['owner', 'OWNER', 'db_owner']);
+    const status = strField(r, ['status', 'STATUS', 'db_status']);
+    const statusLabel = status || 'unknown';
+    statusCounts.set(statusLabel, (statusCounts.get(statusLabel) || 0) + 1);
+
+    let sizeMb = null;
+    const rawSize = strField(r, ['dbSize', 'DBSIZE', 'SIZE_MB', 'size_mb', 'size', 'SIZE']);
+    if (rawSize) {
+      const m = rawSize.match(/^([\d.]+)\s*(KB|MB|GB|TB)?/i);
+      if (m) {
+        const n = parseFloat(m[1]);
+        const unit = (m[2] || 'MB').toUpperCase();
+        if (unit === 'KB') sizeMb = n / 1024;
+        else if (unit === 'GB') sizeMb = n * 1024;
+        else if (unit === 'TB') sizeMb = n * 1024 * 1024;
+        else sizeMb = n; // MB or bare number
+      }
+    }
+
+    const labels = { database_name: dbName, status: statusLabel, owner };
+    if (sizeMb !== null) {
+      totalSizeMb += sizeMb;
+      results.push({ fullName: `${prefix}_db02_database_size_mb`, value: parseFloat(sizeMb.toFixed(2)), labels });
+    }
+
+    // 1 = healthy, 0 = degraded (recovery/offline/unknown-to-normal states)
+    const healthy = /^(full|online|normal|ok|active|good|available)$/i.test(status) || status === '' ? 1 : 0;
+    results.push({ fullName: `${prefix}_db02_database_status`, value: healthy, labels });
+  }
+
+  if (totalSizeMb > 0) {
+    results.push({ fullName: `${prefix}_db02_database_size_total_mb`, value: parseFloat(totalSizeMb.toFixed(2)), labels: {} });
+  }
+  for (const [status, cnt] of statusCounts) {
+    results.push({ fullName: `${prefix}_db02_database_status_count`, value: cnt, labels: { status } });
+  }
+  return results;
+}
+
+/**
+ * SM13 — Update Requests
+ * Actual JSON: { "data": [ { vbkey, vbusr, vbdate, vbtimoff, vbstate, vbtcode, vbfunc }, ... ] }
+ * vbstate: 0/1=open, 2=in process, 3/5=finished, 4=error, 255=initial/unknown.
+ */
+function collectSM13(rows, prefix) {
+  const results = [];
+  const updates = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (updates.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_sm13_total_updates`, value: updates.length, labels: {} });
+
+  let pending = 0;
+  let error = 0;
+  let finished = 0;
+  let unknown = 0;
+  const stateCounts = new Map();
+  for (const r of updates) {
+    const user = strField(r, ['vbusr', 'VBUSR', 'user', 'USER']);
+    const tcode = strField(r, ['vbtcode', 'VBTCODE', 'tcode', 'TCODE']);
+    const func = strField(r, ['vbfunc', 'VBFUNC', 'function', 'FUNCTION']);
+    const state = numField(r, ['vbstate', 'VBSTATE', 'state', 'STATE']);
+    const stateLabel = state === null ? 'unknown' : String(state);
+    stateCounts.set(stateLabel, (stateCounts.get(stateLabel) || 0) + 1);
+
+    if (state === 3 || state === 5) finished++;
+    else if (state === 4 || state === 7 || state === 9 || state === 11) error++;
+    else if (state === 0 || state === 1 || state === 2) pending++;
+    else unknown++;
+
+    const labels = { user, tcode, function: func };
+    results.push({ fullName: `${prefix}_sm13_update_state`, value: state === null ? 0 : state, labels });
+
+    const date = parseSapTimestamp(r.vbdate || r.VBDATE || r.date || r.DATE);
+    if (date) {
+      const ageSec = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+      results.push({ fullName: `${prefix}_sm13_update_age_seconds`, value: ageSec, labels });
+    }
+  }
+
+  results.push({ fullName: `${prefix}_sm13_pending_updates`, value: pending, labels: {} });
+  results.push({ fullName: `${prefix}_sm13_error_updates`, value: error, labels: {} });
+  results.push({ fullName: `${prefix}_sm13_finished_updates`, value: finished, labels: {} });
+  results.push({ fullName: `${prefix}_sm13_unknown_updates`, value: unknown, labels: {} });
+  for (const [state, cnt] of stateCounts) {
+    results.push({ fullName: `${prefix}_sm13_update_state_count`, value: cnt, labels: { state } });
+  }
+  for (const [user, cnt] of freqMap(updates, ['vbusr', 'VBUSR', 'user', 'USER']))
+    results.push({ fullName: `${prefix}_sm13_user_count`, value: cnt, labels: { user } });
+  for (const [tcode, cnt] of freqMap(updates, ['vbtcode', 'VBTCODE', 'tcode', 'TCODE']))
+    results.push({ fullName: `${prefix}_sm13_tcode_count`, value: cnt, labels: { tcode } });
+  for (const [func, cnt] of freqMap(updates, ['vbfunc', 'VBFUNC', 'function', 'FUNCTION']))
+    results.push({ fullName: `${prefix}_sm13_function_count`, value: cnt, labels: { update_function: func } });
+
+  return results;
+}
+
+/**
+ * SM20 — Security Audit Log
+ * Expected JSON: { "data": [ { USER/USERNAME, EVENT/EVENTID, MESSAGE/TEXT, SEVERITY, TCODE, PROGRAM, TERMINAL }, ... ] }
+ */
+function collectSM20(rows, prefix) {
+  const results = [];
+  const events = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (events.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_sm20_total_events`, value: events.length, labels: {} });
+
+  let critical = 0;
+  let severe = 0;
+  const logonSuccess = new Map();
+  const logonFail = new Map();
+  const rfcLogons = new Map();
+  const rfcCalls = new Map();
+
+  for (const r of events) {
+    const user = strField(r, ['USER', 'USERNAME', 'LOGONID', 'user']);
+    const severity = norm(r.SEVERITY || r.severity || '');
+    const eventId = strField(r, ['EVENT', 'EVENTID', 'event']);
+    const text = strField(r, ['MESSAGE', 'TEXT', 'DESCRIPT', 'message']);
+    const combined = `${eventId} ${text}`.toUpperCase();
+
+    if (/CRITICAL|^4|^5/.test(severity) || /CRITICAL/.test(combined)) critical++;
+    else if (/^3/.test(severity) || /SEVERE|ERROR/.test(combined)) severe++;
+
+    const userKey = user || 'unknown';
+    if (/RFC/.test(combined) && /LOGON|LOGIN/.test(combined)) {
+      rfcLogons.set(userKey, (rfcLogons.get(userKey) || 0) + 1);
+    } else if (/LOGON|LOGIN/.test(combined)) {
+      if (/FAIL|REJECT|DENIED|INVALID|UNSUCCESS/.test(combined)) {
+        logonFail.set(userKey, (logonFail.get(userKey) || 0) + 1);
+      } else {
+        logonSuccess.set(userKey, (logonSuccess.get(userKey) || 0) + 1);
+      }
+    } else if (/RFC/.test(combined)) {
+      rfcCalls.set(userKey, (rfcCalls.get(userKey) || 0) + 1);
+    }
+  }
+
+  results.push({ fullName: `${prefix}_sm20_critical_events`, value: critical, labels: {} });
+  results.push({ fullName: `${prefix}_sm20_severe_events`, value: severe, labels: {} });
+  results.push({ fullName: `${prefix}_sm20_other_events`, value: events.length - critical - severe, labels: {} });
+
+  for (const [user, cnt] of logonSuccess)
+    results.push({ fullName: `${prefix}_sm20_successful_logons`, value: cnt, labels: { user } });
+  for (const [user, cnt] of logonFail)
+    results.push({ fullName: `${prefix}_sm20_failed_logons`, value: cnt, labels: { user } });
+  for (const [user, cnt] of rfcLogons)
+    results.push({ fullName: `${prefix}_sm20_rfc_logons`, value: cnt, labels: { user } });
+  for (const [user, cnt] of rfcCalls)
+    results.push({ fullName: `${prefix}_sm20_rfc_calls`, value: cnt, labels: { user } });
+
+  for (const [user, cnt] of freqMap(events, ['USER', 'USERNAME', 'LOGONID', 'user']))
+    results.push({ fullName: `${prefix}_sm20_user_count`, value: cnt, labels: { user } });
+  for (const [prog, cnt] of freqMap(events, ['PROGRAM', 'REPORT', 'program']))
+    results.push({ fullName: `${prefix}_sm20_program_count`, value: cnt, labels: { program: prog } });
+  for (const [term, cnt] of freqMap(events, ['TERMINAL', 'terminal']))
+    results.push({ fullName: `${prefix}_sm20_terminal_count`, value: cnt, labels: { terminal: term } });
+  for (const [tcode, cnt] of freqMap(events, ['TCODE', 'tcode']))
+    results.push({ fullName: `${prefix}_sm20_tcode_count`, value: cnt, labels: { tcode } });
+
+  return results;
+}
+
+/**
+ * SM21 — System Log
+ * Actual JSON: { "data": [ { ZDATE, ZTIME, INSTANCE, WP_TYPE, SEVERITY, MESSAGEID, TEXT, DEVCLASS, ERRNO, ERRORNAME }, ... ] }
+ * SAP system-log severity: 01=info, 02=warning, 03=error, 04+=critical; 08=short dump.
+ */
+function collectSM21(rows, prefix) {
+  const results = [];
+  const messages = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (messages.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_sm21_total_messages`, value: messages.length, labels: {} });
+
+  let critical = 0;
+  let error = 0;
+  let warning = 0;
+  const severityCounts = new Map();
+  for (const r of messages) {
+    const sev = strField(r, ['SEVERITY', 'severity']);
+    const text = strField(r, ['TEXT', 'text']);
+    const sevLabel = sev || 'unknown';
+    severityCounts.set(sevLabel, (severityCounts.get(sevLabel) || 0) + 1);
+
+    const upText = text.toUpperCase();
+    if (['04', '05', '08', '09'].includes(sev) || /SHORT DUMP|TERMINATION|ABORT|FATAL/.test(upText)) critical++;
+    else if (sev === '03' || / ERROR /.test(` ${upText} `)) error++;
+    else if (sev === '02' || /WARNING/.test(upText)) warning++;
+  }
+
+  results.push({ fullName: `${prefix}_sm21_critical_messages`, value: critical, labels: {} });
+  results.push({ fullName: `${prefix}_sm21_error_messages`, value: error, labels: {} });
+  results.push({ fullName: `${prefix}_sm21_warning_messages`, value: warning, labels: {} });
+  results.push({ fullName: `${prefix}_sm21_system_messages`, value: messages.length - critical - error - warning, labels: {} });
+
+  for (const [sev, cnt] of severityCounts)
+    results.push({ fullName: `${prefix}_sm21_message_count`, value: cnt, labels: { severity: sev } });
+  for (const [user, cnt] of freqMap(messages, ['ZUSER', 'zuser', 'USER', 'user']))
+    results.push({ fullName: `${prefix}_sm21_user_count`, value: cnt, labels: { user } });
+
+  // ── Additive metrics (enterprise dashboard panels 1220–1234) ──────────
+  const instances = new Set();
+  const errorNames = new Set();
+  for (const r of messages) {
+    const inst = strField(r, ['INSTANCE', 'instance']);
+    if (inst !== '') instances.add(inst);
+    const en = strField(r, ['ERRORNAME', 'errorname']);
+    if (en !== '') errorNames.add(en);
+  }
+  results.push({ fullName: `${prefix}_sm21_unique_instances`, value: instances.size, labels: {} });
+  results.push({ fullName: `${prefix}_sm21_unique_error_types`, value: errorNames.size, labels: {} });
+
+  for (const [inst, cnt] of freqMap(messages, ['INSTANCE', 'instance']))
+    results.push({ fullName: `${prefix}_sm21_instance_count`, value: cnt, labels: { instance: inst } });
+  for (const [wp, cnt] of freqMap(messages, ['WP_TYPE', 'wp_type', 'TYPE']))
+    results.push({ fullName: `${prefix}_sm21_work_process_count`, value: cnt, labels: { wp_type: wp } });
+  for (const [num, cnt] of freqMap(messages, ['ERRNO', 'errno']))
+    results.push({ fullName: `${prefix}_sm21_error_number_count`, value: cnt, labels: { errno: num } });
+  for (const [en, cnt] of freqMap(messages, ['ERRORNAME', 'errorname']))
+    results.push({ fullName: `${prefix}_sm21_error_name_count`, value: cnt, labels: { error_name: en } });
+  for (const [dc, cnt] of freqMap(messages, ['DEVCLASS', 'devclass']))
+    results.push({ fullName: `${prefix}_sm21_component_count`, value: cnt, labels: { devclass: dc } });
+  for (const [txt, cnt] of freqMap(messages, ['TEXT', 'text']))
+    results.push({ fullName: `${prefix}_sm21_message_text_count`, value: cnt, labels: { text: txt } });
+
+  // Info-style metric: one series per system-log message (value always 1).
+  // Every SM21 record carries the full field set, so all rows are emitted.
+  for (const r of messages) {
+    results.push({
+      fullName: `${prefix}_sm21_message_info`,
+      value: 1,
+      labels: {
+        zdate: strField(r, ['ZDATE', 'zdate']),
+        ztime: strField(r, ['ZTIME', 'ztime']),
+        instance: strField(r, ['INSTANCE', 'instance']),
+        wp_type: strField(r, ['WP_TYPE', 'wp_type']),
+        severity: strField(r, ['SEVERITY', 'severity']),
+        messageid: strField(r, ['MESSAGEID', 'messageid']),
+        text: strField(r, ['TEXT', 'text']),
+        devclass: strField(r, ['DEVCLASS', 'devclass']),
+        errno: strField(r, ['ERRNO', 'errno']),
+        error_name: strField(r, ['ERRORNAME', 'errorname']),
+        user: strField(r, ['ZUSER', 'zuser', 'USER', 'user']),
+      },
+    });
+  }
+
+  return results;
+}
+
+/**
+ * SM37 — Background Job Overview
+ * Expected JSON: { "data": [ { JOBNAME, JOBCOUNT, STATUS, SDLUNAME, REPORT, ... }, ... ] }
+ * SAP job status: F=finished, R/Y=released/running, S/P=scheduled/planned, A/Z/C/X=aborted.
+ */
+function collectSM37(rows, prefix) {
+  const results = [];
+  const jobs = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (jobs.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_sm37_total_jobs`, value: jobs.length, labels: {} });
+
+  let running = 0;
+  let failed = 0;
+  let finished = 0;
+  let scheduled = 0;
+  const statusCounts = new Map();
+  for (const r of jobs) {
+    const status = norm(r.STATUS || r.status || '');
+    const statusLabel = status || 'unknown';
+    statusCounts.set(statusLabel, (statusCounts.get(statusLabel) || 0) + 1);
+
+    if (/^[RY]$/.test(status)) running++;
+    else if (/^[AZCX]$/.test(status) || /ABORT|CANCEL|FAILED|ERROR/.test(status)) failed++;
+    else if (status === 'F') finished++;
+    else if (/^[SP]$/.test(status)) scheduled++;
+  }
+
+  results.push({ fullName: `${prefix}_sm37_running_jobs`, value: running, labels: {} });
+  results.push({ fullName: `${prefix}_sm37_failed_jobs`, value: failed, labels: {} });
+  results.push({ fullName: `${prefix}_sm37_finished_jobs`, value: finished, labels: {} });
+  results.push({ fullName: `${prefix}_sm37_scheduled_jobs`, value: scheduled, labels: {} });
+  for (const [status, cnt] of statusCounts)
+    results.push({ fullName: `${prefix}_sm37_job_count`, value: cnt, labels: { status } });
+  for (const [user, cnt] of freqMap(jobs, ['SDLUNAME', 'sdluname', 'USER', 'user']))
+    results.push({ fullName: `${prefix}_sm37_user_count`, value: cnt, labels: { user } });
+
+  return results;
+}
+
+/**
+ * SP01 — Spool Request Overview
+ * Expected JSON: { "data": [ { RQIDENT, RQOWNER, RQDEST, RQCRETIME, RQFINAL, RQERROR }, ... ] }
+ * RQFINAL: "C"=completed, "."=pending, any other value=other.
+ * RQERROR: "0"=no error, any non-zero value=error.
+ * Legacy OUTSTATE/STATE payloads (WAIT/PRNT/ERROR/DONE/FINI) remain supported.
+ */
+function collectSP01(rows, prefix) {
+  const results = [];
+  const requests = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (requests.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_sp01_total_requests`, value: requests.length, labels: {} });
+
+  // Convert an SAP timestamp (RQCRETIME, "YYYYMMDDHHMMSS") to a local ISO
+  // string so Grafana's dateTimeAsIso unit renders a readable Created Time.
+  const toIsoLocal = (raw) => {
+    const m = String(raw || '').trim().match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/);
+    if (!m) return raw;
+    return `${m[1]}-${m[2]}-${m[3]}T${m[4] || '00'}:${m[5] || '00'}:${m[6] || '00'}`;
+  };
+
+  // ── Status classification ──────────────────────────────────────────────
+  // Prefer the real SP01 fields (RQFINAL/RQERROR); fall back to the legacy
+  // OUTSTATE/STATE payloads so existing exporters keep working unchanged.
+  // RQFINAL: "C" → completed, "." → pending, anything else → other.
+  // RQERROR: "0"/empty → no error, any non-zero value → error.
+  const classify = (r) => {
+    const finalStatus = strField(r, ['RQFINAL', 'rqfinal']);
+    const errorField = strField(r, ['RQERROR', 'rqerror']);
+    if (finalStatus !== '' || errorField !== '') {
+      if (errorField !== '' && errorField !== '0') return 'error';
+      if (finalStatus === 'C') return 'completed';
+      if (finalStatus === '.') return 'waiting';
+      return 'other';
+    }
+    const state = norm(r.OUTSTATE || r.outstate || r.STATE || r.state || '');
+    if (/^WAIT$/.test(state) || /WAITING/.test(state)) return 'waiting';
+    if (/ERROR|FAIL/.test(state)) return 'error';
+    if (/DONE|FINI|COMPLETE|PRNT/.test(state)) return 'completed';
+    return 'unknown';
+  };
+
+  let waiting = 0;
+  let error = 0;
+  let completed = 0;
+  const stateCounts = new Map();
+  const printerCounts = new Map();
+  const ownerCounts = new Map();
+  for (const r of requests) {
+    const category = classify(r);
+    const stateLabel =
+      strField(r, ['RQFINAL', 'rqfinal']) ||
+      strField(r, ['OUTSTATE', 'outstate', 'STATE', 'state']) ||
+      'unknown';
+    stateCounts.set(stateLabel, (stateCounts.get(stateLabel) || 0) + 1);
+
+    if (category === 'waiting') waiting++;
+    else if (category === 'error') error++;
+    else if (category === 'completed') completed++;
+
+    const printer = strField(r, ['RQDEST', 'rqdest']);
+    if (printer !== '') printerCounts.set(printer, (printerCounts.get(printer) || 0) + 1);
+    const owner = strField(r, ['RQOWNER', 'rqowner']);
+    if (owner !== '') ownerCounts.set(owner, (ownerCounts.get(owner) || 0) + 1);
+  }
+
+  results.push({ fullName: `${prefix}_sp01_waiting_requests`, value: waiting, labels: {} });
+  results.push({ fullName: `${prefix}_sp01_error_requests`, value: error, labels: {} });
+  results.push({ fullName: `${prefix}_sp01_completed_requests`, value: completed, labels: {} });
+  for (const [state, cnt] of stateCounts)
+    results.push({ fullName: `${prefix}_sp01_request_count`, value: cnt, labels: { state } });
+
+  // ── Additive metrics (enterprise dashboard panels 1205/1206/1210/1212/1214/1216) ──
+  results.push({ fullName: `${prefix}_sp01_active_printers`, value: printerCounts.size, labels: {} });
+  results.push({ fullName: `${prefix}_sp01_unique_owners`, value: ownerCounts.size, labels: {} });
+
+  for (const [printer, cnt] of printerCounts) {
+    results.push({ fullName: `${prefix}_sp01_printer_request_count`, value: cnt, labels: { printer } });
+    results.push({
+      fullName: `${prefix}_sp01_printer_utilization`,
+      value: parseFloat(((cnt / requests.length) * 100).toFixed(1)),
+      labels: { printer },
+    });
+  }
+  for (const [owner, cnt] of ownerCounts)
+    results.push({ fullName: `${prefix}_sp01_owner_request_count`, value: cnt, labels: { owner } });
+
+  // Info-style metric: one series per spool request (value always 1). Emitted
+  // only when real SP01 fields are present — legacy OUTSTATE rows are skipped.
+  for (const r of requests) {
+    const hasRealFields = ['RQIDENT', 'RQOWNER', 'RQDEST', 'RQCRETIME', 'RQFINAL', 'RQERROR']
+      .some((f) => r[f] !== undefined && r[f] !== null && String(r[f]).trim() !== '');
+    if (!hasRealFields) continue;
+    results.push({
+      fullName: `${prefix}_sp01_request_info`,
+      value: 1,
+      labels: {
+        rqident: strField(r, ['RQIDENT', 'rqident']),
+        rqowner: strField(r, ['RQOWNER', 'rqowner']),
+        rqdest: strField(r, ['RQDEST', 'rqdest']),
+        rqcretime: toIsoLocal(strField(r, ['RQCRETIME', 'rqcretime'])),
+        rqfinal: strField(r, ['RQFINAL', 'rqfinal']),
+        rqerror: strField(r, ['RQERROR', 'rqerror']),
+      },
+    });
+  }
+
+  return results;
+}
+
+/**
+ * ST02 — Buffer Tuning
+ * Actual JSON: { "data": [ { BUFFER_NAME, ALLOC_SIZE, AVAIL_SIZE, USED_SPACE, REQUEST, HIT, HITRATIO, DB_ACCESS, SWAP, ... }, ... ] }
+ */
+function collectST02(rows, prefix) {
+  const results = [];
+  const buffers = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (buffers.length === 0) return results;
+
+  results.push({ fullName: `${prefix}_st02_buffer_count`, value: buffers.length, labels: {} });
+
+  for (const r of buffers) {
+    const labels = { buffer_name: strField(r, ['BUFFER_NAME', 'buffer_name', 'NAME', 'name']) };
+
+    const hitRatio = numField(r, ['HITRATIO', 'hitratio', 'HIT_RATIO', 'DB_QUALITY']);
+    if (hitRatio !== null) results.push({ fullName: `${prefix}_st02_buffer_hit_ratio`, value: parseFloat(hitRatio.toFixed(2)), labels });
+
+    const dbAccess = numField(r, ['DB_ACCESS', 'db_access', 'DB_ACC']);
+    if (dbAccess !== null) results.push({ fullName: `${prefix}_st02_db_access`, value: dbAccess, labels });
+
+    const swap = numField(r, ['SWAP', 'swap', 'SWAP_COUNT']);
+    if (swap !== null) results.push({ fullName: `${prefix}_st02_swap_count`, value: swap, labels });
+
+    const used = numField(r, ['USED_SPACE', 'used_space', 'USED_SIZE']);
+    if (used !== null) results.push({ fullName: `${prefix}_st02_used_size`, value: used, labels });
+
+    const avail = numField(r, ['AVAIL_SIZE', 'avail_size', 'AVAILABLE_SIZE']);
+    if (avail !== null) results.push({ fullName: `${prefix}_st02_available_size`, value: avail, labels });
+
+    const alloc = numField(r, ['ALLOC_SIZE', 'alloc_size', 'ALLOCATED_SIZE']);
+    if (alloc !== null) results.push({ fullName: `${prefix}_st02_allocated_size`, value: alloc, labels });
+
+    const requests = numField(r, ['REQUEST', 'request', 'REQUESTS']);
+    if (requests !== null) results.push({ fullName: `${prefix}_st02_requests`, value: requests, labels });
+
+    const hits = numField(r, ['HIT', 'hit', 'HITS']);
+    if (hits !== null) results.push({ fullName: `${prefix}_st02_hits`, value: hits, labels });
+  }
+
+  return results;
+}
+
+/**
+ * ST03N — Workload Analysis
+ * Actual JSON: { "data": [ { TASKTYPE, STARTDATE, STARTTIME, RESPTI, CPUTI, DBP_TIME }, ... ] }
+ * Values are cumulative milliseconds. Missing fields (lock/queue/roll) are skipped gracefully.
+ */
+function collectST03N(rows, prefix) {
+  const results = [];
+  const workloads = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (workloads.length === 0) return results;
+
+  for (const r of workloads) {
+    const labels = { task_type: strField(r, ['TASKTYPE', 'tasktype', 'TASK_TYPE']) };
+
+    const resp = numField(r, ['RESPTI', 'respti', 'RESPONSE_TIME']);
+    if (resp !== null) results.push({ fullName: `${prefix}_st03n_response_time_ms`, value: resp, labels });
+
+    const cpu = numField(r, ['CPUTI', 'cputi', 'CPU_TIME']);
+    if (cpu !== null) results.push({ fullName: `${prefix}_st03n_cpu_time_ms`, value: cpu, labels });
+
+    const db = numField(r, ['DBP_TIME', 'dbp_time', 'DBTI', 'DB_TIME']);
+    if (db !== null) results.push({ fullName: `${prefix}_st03n_db_time_ms`, value: db, labels });
+
+    const lock = numField(r, ['LOCKTI', 'lockti', 'LOCK_TIME']);
+    if (lock !== null) results.push({ fullName: `${prefix}_st03n_lock_time_ms`, value: lock, labels });
+
+    const queue = numField(r, ['QUEUETI', 'queueti', 'QUEUE_TIME']);
+    if (queue !== null) results.push({ fullName: `${prefix}_st03n_queue_time_ms`, value: queue, labels });
+
+    const roll = numField(r, ['ROLL_WAIT', 'roll_wait', 'ROLLWAIT', 'ROLLTI']);
+    if (roll !== null) results.push({ fullName: `${prefix}_st03n_roll_wait_ms`, value: roll, labels });
+
+    const dialogs = numField(r, ['DIALOG_COUNT', 'dialog_count', 'DIALOGS']);
+    if (dialogs !== null) results.push({ fullName: `${prefix}_st03n_dialog_count`, value: dialogs, labels });
+  }
+
+  for (const [taskType, cnt] of freqMap(workloads, ['TASKTYPE', 'tasktype', 'TASK_TYPE']))
+    results.push({ fullName: `${prefix}_st03n_task_count`, value: cnt, labels: { task_type: taskType } });
+
+  return results;
+}
+
+/**
+ * STRUST — Certificate Store (X.509)
+ * Actual JSON: { "data": [ { PSE_CONTEXT, PSE_APPLIC, PSE_DESCRIPT, CERTIFICATE (base64 DER) }, ... ] }
+ * Certificates are DECODED with @peculiar/x509. Raw Base64 is NEVER exposed to Prometheus.
+ */
+function collectSTRUST(rows, prefix) {
+  const results = [];
+  const certs = rows.filter((r) => typeof r === 'object' && r !== null && r.CERTIFICATE);
+  if (certs.length === 0) return results;
+
+  let decoded = 0;
+  for (const r of certs) {
+    const context = strField(r, ['PSE_CONTEXT', 'pse_context']);
+    const applic = strField(r, ['PSE_APPLIC', 'pse_applic']);
+
+    let cert;
+    try {
+      // Strip PEM armor (if present) so only the raw base64 body is decoded.
+      const pem = String(r.CERTIFICATE)
+        .replace(/-----BEGIN CERTIFICATE-----/g, '')
+        .replace(/-----END CERTIFICATE-----/g, '')
+        .replace(/\s+/g, '');
+      const der = Buffer.from(pem, 'base64');
+      cert = new X509Certificate(der);
+    } catch (err) {
+      logger.warn({ context, applic, err: err.message }, 'STRUST: failed to decode certificate — skipped');
+      continue;
+    }
+
+    const subject = String(cert.subject || '');
+    const issuer = String(cert.issuer || '');
+    const serialNumber = cert.serialNumber ? String(cert.serialNumber) : '';
+    const notBefore = cert.notBefore instanceof Date ? cert.notBefore : null;
+    const notAfter = cert.notAfter instanceof Date ? cert.notAfter : null;
+    const fmtDate = (d) => (d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '');
+
+    if (notAfter && !Number.isNaN(notAfter.getTime())) {
+      const now = Date.now();
+      const daysRemaining = Math.floor((notAfter.getTime() - now) / 86400000);
+      const expired = notAfter.getTime() < now ? 1 : 0;
+      const expiring = !expired && daysRemaining <= 30 ? 1 : 0;
+      const status = expired ? 'EXPIRED' : expiring ? 'EXPIRING' : 'OK';
+
+      // Identity/validity metadata only — NEVER crypto material (no base64, no
+      // public key, no signature algorithm, no thumbprint, no extensions).
+      const labels = {
+        PSE_CONTEXT: context,
+        PSE_APPLIC: applic,
+        PSE_DESCRIPT: strField(r, ['PSE_DESCRIPT', 'pse_descript']),
+        subject,
+        issuer,
+        valid_from: fmtDate(notBefore),
+        valid_to: fmtDate(notAfter),
+        serial_number: serialNumber,
+        status,
+      };
+
+      results.push({ fullName: `${prefix}_strust_certificate_days_remaining`, value: daysRemaining, labels });
+      results.push({ fullName: `${prefix}_strust_certificate_expired`, value: expired, labels });
+      results.push({ fullName: `${prefix}_strust_certificate_expiring`, value: expiring, labels });
+    }
+    decoded++;
+  }
+
+  if (decoded > 0) {
+    results.push({ fullName: `${prefix}_strust_certificate_count`, value: decoded, labels: {} });
+  }
+  return results;
+}
+
 // ── T-Code Collector Registry ────────────────────────────────────────────
 
 const COLLECTOR_MAP = {
@@ -440,6 +1120,15 @@ const COLLECTOR_MAP = {
   SM50: collectSM50,
   ST22: collectST22,
   ST06: collectST06,
+  DB02: collectDB02,
+  SM13: collectSM13,
+  SM20: collectSM20,
+  SM21: collectSM21,
+  SM37: collectSM37,
+  SP01: collectSP01,
+  ST02: collectST02,
+  ST03N: collectST03N,
+  STRUST: collectSTRUST,
 };
 
 // ── Parser Entry Point ───────────────────────────────────────────────────
@@ -458,15 +1147,18 @@ function parseToMetrics(jsonString, tcode, metricsPrefix) {
         rawMetrics.push(...st06Metrics);
       } else {
         const rows = extractRows(parsed, tcodeKey);
-        if (!Array.isArray(rows) || rows.length === 0) {
-          // If no array found, try treating the entire object as a single record
+        if (rows === null) {
+          // No data-array wrapper found — try treating the entire object as a
+          // single record (legacy flat-payload exporters).
           logger.warn({ tcode }, 'No data array found in JSON — checking for single-record format');
-          // Some exporters may put the fields directly at top level (no data[] wrapper)
           const singleRecord = parsed;
           if (singleRecord && typeof singleRecord === 'object' && !Array.isArray(singleRecord)) {
             const tcMetrics = collector([singleRecord], metricsPrefix);
             rawMetrics.push(...tcMetrics);
           }
+        } else if (rows.length === 0) {
+          // Data wrapper exists but is empty — no records, no metrics.
+          logger.warn({ tcode }, 'Data array is empty — no metrics generated');
         } else {
           const tcMetrics = collector(rows, metricsPrefix);
           rawMetrics.push(...tcMetrics);
@@ -497,4 +1189,13 @@ module.exports = {
   collectSM50,
   collectST22,
   collectST06,
+  collectDB02,
+  collectSM13,
+  collectSM20,
+  collectSM21,
+  collectSM37,
+  collectSP01,
+  collectST02,
+  collectST03N,
+  collectSTRUST,
 };

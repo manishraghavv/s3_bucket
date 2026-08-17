@@ -6,7 +6,7 @@
   "tags": ["sap", "enterprise", "monitoring"],
   "timezone": "browser",
   "editable": true,
-  "refresh": "60s",
+  "refresh": "5s",
   "graphTooltip": 1,
   "time": { "from": "now-6h", "to": "now" },
   "timepicker": {

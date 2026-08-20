@@ -16,6 +16,6 @@ datasources:
     editable: false
     uid: prometheus
     jsonData:
-      timeInterval: "60s"
-      queryTimeout: "30s"
+      timeInterval: "10s"
+      queryTimeout: "10s"
       httpMethod: "POST"

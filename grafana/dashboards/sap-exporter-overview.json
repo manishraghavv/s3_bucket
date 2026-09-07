@@ -118,16 +118,14 @@
     },
     {
       "id": 11,
-      "title": "User Types",
+      "title": "Session Types",
       "type": "barchart",
       "gridPos": { "h": 7, "w": 6, "x": 0, "y": 5 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": { "orientation": "auto", "legend": { "displayMode": "list", "placement": "bottom" } },
       "fieldConfig": { "defaults": {} },
       "targets": [
-        { "expr": "sap_al08_gui_users", "legendFormat": "GUI", "refId": "A" },
-        { "expr": "sap_al08_background_users", "legendFormat": "Background", "refId": "B" },
-        { "expr": "sap_al08_rfc_users", "legendFormat": "RFC", "refId": "C" }
+        { "expr": "sap_al08_type_count", "legendFormat": "{{type}}", "refId": "A" }
       ]
     },
     {

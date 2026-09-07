@@ -27,6 +27,17 @@ function labelVal(val) {
   return String(val).substring(0, 128);
 }
 
+/**
+ * Raw label value for one source field of a row: stringified, trimmed and
+ * truncated (128 chars) exactly like labelVal/strField elsewhere. Absent or
+ * empty source values stay '' — raw meaning is preserved, nothing is invented.
+ */
+function rowFieldVal(row, field) {
+  const raw = row[field];
+  if (raw === undefined || raw === null) return '';
+  return String(raw).trim().substring(0, 128);
+}
+
 function countWhere(rows, predicate) {
   let c = 0;
   for (const r of rows) { if (predicate(r)) c++; }
@@ -79,6 +90,24 @@ function numField(row, fields) {
     if (raw === undefined || raw === null || raw === '') continue;
     const n = parseFloat(String(raw).trim());
     if (!Number.isNaN(n) && Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/**
+ * Numeric value of a date/time-like field after stripping non-digits, e.g.
+ * 20260903 / "2026-09-03" → 20260903 and 104237 / "10:42:37" → 104237.
+ * Returns null when the field is absent or contains no digits.
+ */
+function digitsNumField(row, fields) {
+  const fieldList = Array.isArray(fields) ? fields : [fields];
+  for (const f of fieldList) {
+    const raw = row[f];
+    if (raw === undefined || raw === null || raw === '') continue;
+    const s = String(raw).replace(/\D+/g, '');
+    if (s === '') continue;
+    const n = Number(s);
+    if (Number.isFinite(n)) return n;
   }
   return null;
 }
@@ -139,9 +168,12 @@ function extractRows(parsed, tcode) {
     SM21: ['data', 'DATA', 'messages', 'MESSAGES', 'system_log', 'SYSTEM_LOG', 'records', 'RECORDS', 'entries'],
     SM37: ['data', 'DATA', 'jobs', 'JOBS', 'entries'],
     SP01: ['data', 'DATA', 'spool', 'SPOOL', 'requests', 'REQUESTS', 'output', 'OUTPUT', 'entries'],
+    SP12: ['data', 'DATA', 'lines', 'LINES', 'temse', 'TEMSE', 'entries'],
     ST02: ['data', 'DATA', 'buffers', 'BUFFERS', 'entries'],
     ST03N: ['data', 'DATA', 'workload', 'WORKLOAD', 'entries'],
+    SLICENSE: ['data', 'DATA', 'licenses', 'LICENSES', 'entries'],
     STRUST: ['data', 'DATA', 'certificates', 'CERTIFICATES', 'entries'],
+    RZ20: ['data', 'DATA', 'alerts', 'ALERTS', 'entries'],
   };
 
   const keys = ARRAY_KEYS[tcode] || ['data', 'DATA', 'entries'];
@@ -166,19 +198,73 @@ function extractRows(parsed, tcode) {
 
 /**
  * AL08 — Logged-On Users
- * Actual JSON fields: CLIENT, USERID, TCODE, TERMINAL, TIME, HOSTADR, TYPE
+ * ======================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record (11 fields — ALL preserved below):
+ *     SESSION_ID   → session_info{session_id} + session_id_present/distinct (numeric)
+ *     CLIENT       → client_count{client} + session_info{client} + client_present/distinct
+ *     USERID       → user_count{user} + session_info{userid} + userid_present/distinct
+ *     TCODE        → tcode_count{tcode} + session_info{tcode} + tcode_present/distinct (may be "")
+ *     TERMINAL     → terminal_count{terminal} + session_info{terminal} + terminal_present/distinct
+ *     TIME         → session_info{time} + time_present/distinct
+ *     SESSION      → session_info{session} + session_present/distinct
+ *     TYPE         → type_count{type} + session_info{type} + type_present/distinct (numeric, raw)
+ *     STAT         → status_count{stat} + session_info{stat} + stat_present/distinct (numeric, raw)
+ *     SERVER_NAME  → host_count{host} + session_info{server_name} + server_name_present/distinct
+ *     MEMORY       → session_info{memory} + memory_present/distinct (numeric)
+ *
+ * Design:
+ *   - Legacy metric names (logged_users, total_sessions, client_count,
+ *     tcode_count, user_count, terminal_count, host_count, type_count,
+ *     status_count) and their semantics are preserved unchanged.
+ *   - TYPE and STAT are raw numeric SAP codes (e.g. 2, 4, 32 / 2) exposed
+ *     as-is — no SAP meaning is assumed. Numeric 0 is preserved everywhere
+ *     (freqMap / strField / infoVal only skip empty strings, never 0).
+ *   - session_info carries ALL 11 fields as labels with their raw values;
+ *     empty strings (TCODE="") stay observable and numeric zeros stay "0".
+ *   - Field-validation metrics (present/distinct) treat "" as absent but
+ *     numeric 0 as present — no truthy/falsy coercion of 0.
+ *   - Duplicate records are NOT collapsed: total_sessions counts every row
+ *     and every row emits its own session_info series.
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
  */
-function collectAL08(rows, prefix) {
+function collectAL08(parsed, prefix) {
   const results = [];
-  const n = rows.length;
-  if (n === 0) return results;
 
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_al08_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'AL08');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'AL08' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'AL08' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
+  const n = rows.length;
+
+  // ── Legacy metrics (names and semantics preserved exactly) ─────────
   const uniqueUsers = new Set(rows.map((r) => r.USERID || r.USER || r.BNAME || ''));
   results.push({ fullName: `${prefix}_al08_logged_users`, value: uniqueUsers.size, labels: {} });
   results.push({ fullName: `${prefix}_al08_total_sessions`, value: n, labels: {} });
-  results.push({ fullName: `${prefix}_al08_gui_users`, value: countWhere(rows, (r) => (r.TYPE || 'A') === 'A'), labels: {} });
-  results.push({ fullName: `${prefix}_al08_background_users`, value: countWhere(rows, (r) => r.TYPE === 'B'), labels: {} });
-  results.push({ fullName: `${prefix}_al08_rfc_users`, value: countWhere(rows, (r) => r.TYPE === 'C'), labels: {} });
 
   for (const [client, cnt] of freqMap(rows, 'CLIENT'))
     results.push({ fullName: `${prefix}_al08_client_count`, value: cnt, labels: { client } });
@@ -188,72 +274,424 @@ function collectAL08(rows, prefix) {
     results.push({ fullName: `${prefix}_al08_user_count`, value: cnt, labels: { user } });
   for (const [term, cnt] of freqMap(rows, 'TERMINAL'))
     results.push({ fullName: `${prefix}_al08_terminal_count`, value: cnt, labels: { terminal: term } });
-  for (const [host, cnt] of freqMap(rows, 'HOSTADR'))
+
+  // Host = SAP application server (SERVER_NAME). Empty values are skipped by
+  // freqMap, so no blank `host` label series is emitted.
+  for (const [host, cnt] of freqMap(rows, 'SERVER_NAME'))
     results.push({ fullName: `${prefix}_al08_host_count`, value: cnt, labels: { host } });
+
+  // Raw numeric session TYPE codes (e.g. 2, 4, 32). Counted as-is — no SAP
+  // meaning is assumed (the former A/B/C letter mapping was wrong for the
+  // real payload and has been removed).
+  for (const [type, cnt] of freqMap(rows, 'TYPE'))
+    results.push({ fullName: `${prefix}_al08_type_count`, value: cnt, labels: { type } });
+
+  // Raw numeric session STATUS code. Counted as-is — no meaning assumed.
+  for (const [stat, cnt] of freqMap(rows, 'STAT'))
+    results.push({ fullName: `${prefix}_al08_status_count`, value: cnt, labels: { stat } });
+
+  // ── Field-validation metrics for ALL 11 fields ─────────────────────
+  // present = records whose raw value stringifies to a non-empty string
+  // (numeric 0 → "0" → present). Empty strings ("" e.g. TCODE) are treated
+  // as absent here but stay observable in session_info below.
+  const F = {
+    SESSION_ID: ['SESSION_ID', 'session_id'],
+    CLIENT: ['CLIENT', 'client'],
+    USERID: ['USERID', 'userid'],
+    TCODE: ['TCODE', 'tcode'],
+    TERMINAL: ['TERMINAL', 'terminal'],
+    TIME: ['TIME', 'time'],
+    SESSION: ['SESSION', 'session'],
+    TYPE: ['TYPE', 'type'],
+    STAT: ['STAT', 'stat'],
+    SERVER_NAME: ['SERVER_NAME', 'server_name'],
+    MEMORY: ['MEMORY', 'memory'],
+  };
+  const presentCount = (fields) => countWhere(rows, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of rows) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+  const FIELD_NAMES = [
+    ['session_id', F.SESSION_ID],
+    ['client', F.CLIENT],
+    ['userid', F.USERID],
+    ['tcode', F.TCODE],
+    ['terminal', F.TERMINAL],
+    ['time', F.TIME],
+    ['session', F.SESSION],
+    ['type', F.TYPE],
+    ['stat', F.STAT],
+    ['server_name', F.SERVER_NAME],
+    ['memory', F.MEMORY],
+  ];
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_al08_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_al08_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  // ── Per-record session info — every field preserved ────────────────
+  // One series per logged-on session (duplicate records are NOT collapsed).
+  // All 11 source fields are carried as snake_case labels with their raw
+  // value — empty TCODE stays "", numeric SESSION_ID/TYPE/STAT/MEMORY stay
+  // their original numbers as strings ("0" for zero).
+  // Raw label value: no trim, so the exact source bytes survive (e.g.
+  // SESSION="  1" keeps its leading spaces, TCODE="" stays empty). Only
+  // absent (undefined/null) values become ''. The 128-char cap follows
+  // the existing labelVal/rowFieldVal convention.
+  const infoVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).substring(0, 128);
+    }
+    return '';
+  };
+  for (const r of rows) {
+    results.push({
+      fullName: `${prefix}_al08_session_info`,
+      value: 1,
+      labels: {
+        session_id: infoVal(r, F.SESSION_ID),
+        client: infoVal(r, F.CLIENT),
+        userid: infoVal(r, F.USERID),
+        tcode: infoVal(r, F.TCODE),
+        terminal: infoVal(r, F.TERMINAL),
+        time: infoVal(r, F.TIME),
+        session: infoVal(r, F.SESSION),
+        type: infoVal(r, F.TYPE),
+        stat: infoVal(r, F.STAT),
+        server_name: infoVal(r, F.SERVER_NAME),
+        memory: infoVal(r, F.MEMORY),
+      },
+    });
+  }
 
   return results;
 }
 
 /**
  * SM12 — Lock Entries
- * Actual JSON fields: table, gmod, user_id, gclient, lock_arg
+ * Actual JSON fields (17, verified from the real S3 payload):
+ *   TABLE, LOCK_ARG, USER_ID, GMODE, GUSR, GUSRVB, GUSE, GUSEVB, GOBJ,
+ *   GCLIENT, GUNAME, GTHOST, GTWP, GTSYSNR, GTDATE, GTTIME, GTMARK
+ *
+ * Real-payload notes:
+ *   - Lock ownership lives in GUNAME. USER_ID exists but is empty in every
+ *     real row, so it is never used as the user identity.
+ *   - GMODE holds the lock mode (the old collector read GMOD). E/X counts as
+ *     exclusive, S as shared; every other value (e.g. O in the real data)
+ *     stays in an explicit "other" bucket — no SAP meaning is guessed.
+ *
+ * Cardinality rules:
+ *   - TABLE / GMODE / GOBJ / GCLIENT / GUNAME / GTHOST are low-cardinality
+ *     dimensions → per-value count metrics with labels.
+ *   - LOCK_ARG and GUSRVB are free-form and effectively unique per lock;
+ *     they are NEVER used as labels → scalar presence / distinct aggregates.
+ *   - USER_ID / GUSR / GTMARK are empty in the real payload → scalar presence
+ *     gauges only (no blank-label series is emitted).
+ *   - GUSE / GUSEVB / GTWP / GTSYSNR → numeric aggregates (never labels).
+ *   - GTDATE / GTTIME → latest-value numeric gauges (never labels, never one
+ *     series per timestamp).
+ *   - Per-lock info: every lock entry is ALSO exposed as a dedicated
+ *     sap_sm12_lock_info{...} 1 series carrying ALL 17 source fields as raw
+ *     snake_case labels (128-char cap) so each lock row can be reconstructed
+ *     (mirrors sap_al08_session_info). See the collector body for the map.
  */
 function collectSM12(rows, prefix) {
   const results = [];
   const n = rows.length;
   if (n === 0) return results;
 
+  // Candidate keys per source field — real uppercase name first, legacy
+  // fallbacks after (same pattern as the other T-Code collectors).
+  const F = {
+    TABLE: ['TABLE', 'table', 'TABNAME', 'TABLE_NAME'],
+    LOCK_ARG: ['LOCK_ARG', 'lock_arg', 'LOCKARG', 'GARG'],
+    USER_ID: ['USER_ID', 'user_id'],
+    GMODE: ['GMODE', 'gmode', 'GMOD', 'gmod', 'LOCK_MODE'],
+    GUSR: ['GUSR', 'gusr'],
+    GUSRVB: ['GUSRVB', 'gusrvb'],
+    GUSE: ['GUSE', 'guse'],
+    GUSEVB: ['GUSEVB', 'gusevb'],
+    GOBJ: ['GOBJ', 'gobj', 'LOCK_OBJECT'],
+    GCLIENT: ['GCLIENT', 'gclient', 'CLIENT'],
+    GUNAME: ['GUNAME', 'guname', 'USER_ID', 'user_id', 'USER', 'BNAME', 'USER_NAME'],
+    GTHOST: ['GTHOST', 'gthost', 'HOST'],
+    GTWP: ['GTWP', 'gtwp'],
+    GTSYSNR: ['GTSYSNR', 'gtsysnr'],
+    GTDATE: ['GTDATE', 'gtdate', 'DATE', 'DATUM'],
+    GTTIME: ['GTTIME', 'gttime', 'TIME'],
+    GTMARK: ['GTMARK', 'gtmark'],
+  };
+
+  // ── Overall count ──────────────────────────────────────────────────
   results.push({ fullName: `${prefix}_sm12_total_locks`, value: n, labels: {} });
 
-  const uniqueUsers = new Set(rows.map((r) => r.USER_ID || r.user_id || r.USER || r.BNAME || r.USER_NAME || ''));
+  // ── GUNAME — unique lock-owning users ──────────────────────────────
+  const uniqueUsers = new Set();
+  for (const r of rows) {
+    const u = strField(r, F.GUNAME);
+    if (u !== '') uniqueUsers.add(u);
+  }
   results.push({ fullName: `${prefix}_sm12_unique_users`, value: uniqueUsers.size, labels: {} });
 
-  const uniqueTables = new Set(rows.map((r) => r.TABLE || r.table || r.TABNAME || r.TABLE_NAME || ''));
+  // ── TABLE — unique locked tables ───────────────────────────────────
+  const uniqueTables = new Set();
+  for (const r of rows) {
+    const t = strField(r, F.TABLE);
+    if (t !== '') uniqueTables.add(t);
+  }
   results.push({ fullName: `${prefix}_sm12_locked_tables`, value: uniqueTables.size, labels: {} });
 
-  // Exclusive locks (GMOD/gmod 'E' or 'X')
-  results.push({
-    fullName: `${prefix}_sm12_exclusive_locks`,
-    value: countWhere(rows, (r) => {
-      const mode = r.GMOD || r.gmod || r.LOCK_MODE || '';
-      return mode === 'E' || mode === 'X';
-    }),
-    labels: {},
+  // ── GMODE — lock-mode buckets (E/X exclusive, S shared, rest other) ─
+  const exclusiveLocks = countWhere(rows, (r) => {
+    const mode = norm(strField(r, F.GMODE));
+    return mode === 'E' || mode === 'X';
   });
+  const sharedLocks = countWhere(rows, (r) => norm(strField(r, F.GMODE)) === 'S');
+  results.push({ fullName: `${prefix}_sm12_exclusive_locks`, value: exclusiveLocks, labels: {} });
+  results.push({ fullName: `${prefix}_sm12_shared_locks`, value: sharedLocks, labels: {} });
+  results.push({ fullName: `${prefix}_sm12_other_locks`, value: n - exclusiveLocks - sharedLocks, labels: {} });
 
-  // Shared locks (GMOD/gmod 'S')
-  results.push({
-    fullName: `${prefix}_sm12_shared_locks`,
-    value: countWhere(rows, (r) => (r.GMOD || r.gmod || r.LOCK_MODE || '') === 'S'),
-    labels: {},
-  });
-
-  for (const [table, cnt] of freqMap(rows, ['TABLE', 'table', 'TABNAME', 'TABLE_NAME']))
+  // ── Low-cardinality per-value counts (labels are safe here) ────────
+  for (const [table, cnt] of freqMap(rows, F.TABLE))
     results.push({ fullName: `${prefix}_sm12_table_count`, value: cnt, labels: { table } });
-  for (const [user, cnt] of freqMap(rows, ['USER_ID', 'user_id', 'USER', 'BNAME']))
+  for (const [user, cnt] of freqMap(rows, F.GUNAME))
     results.push({ fullName: `${prefix}_sm12_user_count`, value: cnt, labels: { user } });
-  for (const [mode, cnt] of freqMap(rows, ['GMOD', 'gmod', 'LOCK_MODE']))
+  for (const [mode, cnt] of freqMap(rows, F.GMODE))
     results.push({ fullName: `${prefix}_sm12_lock_mode_count`, value: cnt, labels: { lock_mode: mode } });
-  for (const [client, cnt] of freqMap(rows, ['GCLIENT', 'gclient', 'CLIENT']))
+  for (const [client, cnt] of freqMap(rows, F.GCLIENT))
     results.push({ fullName: `${prefix}_sm12_client_count`, value: cnt, labels: { client } });
+  for (const [obj, cnt] of freqMap(rows, F.GOBJ))
+    results.push({ fullName: `${prefix}_sm12_object_count`, value: cnt, labels: { object: obj } });
+  for (const [host, cnt] of freqMap(rows, F.GTHOST))
+    results.push({ fullName: `${prefix}_sm12_host_count`, value: cnt, labels: { host } });
+
+  // ── GUSE / GUSEVB / GTWP / GTSYSNR — numeric aggregates (no labels) ─
+  results.push({ fullName: `${prefix}_sm12_guse_total`, value: sumField(rows, F.GUSE), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gusevb_total`, value: sumField(rows, F.GUSEVB), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gtwp_total`, value: sumField(rows, F.GTWP), labels: {} });
+  let gtwpMax = null;
+  for (const r of rows) {
+    const wp = numField(r, F.GTWP);
+    if (wp !== null && (gtwpMax === null || wp > gtwpMax)) gtwpMax = wp;
+  }
+  if (gtwpMax !== null) results.push({ fullName: `${prefix}_sm12_gtwp_max`, value: gtwpMax, labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gtsysnr_total`, value: sumField(rows, F.GTSYSNR), labels: {} });
+
+  // ── GTDATE / GTTIME — newest lock timestamp as numeric gauges ───────
+  // Rows are compared on the combined YYYYMMDDHHMMSS score so the newest
+  // pair wins — never the biggest GTTIME of an older day. Non-digit
+  // separators (2026-09-03, 10:42:37) are stripped before comparing.
+  let bestDate = null;
+  let bestTime = null;
+  let bestScore = null;
+  for (const r of rows) {
+    const d = digitsNumField(r, F.GTDATE);
+    const t = digitsNumField(r, F.GTTIME);
+    if (d === null || t === null) continue;
+    const score = d * 1000000 + t;
+    if (bestScore === null || score > bestScore) {
+      bestScore = score;
+      bestDate = d;
+      bestTime = t;
+    }
+  }
+  if (bestDate === null) {
+    // No row carried both date and time — fall back to the max of each.
+    for (const r of rows) {
+      const d = digitsNumField(r, F.GTDATE);
+      if (d !== null && (bestDate === null || d > bestDate)) bestDate = d;
+      const t = digitsNumField(r, F.GTTIME);
+      if (t !== null && (bestTime === null || t > bestTime)) bestTime = t;
+    }
+  }
+  if (bestDate !== null) results.push({ fullName: `${prefix}_sm12_latest_date`, value: bestDate, labels: {} });
+  if (bestTime !== null) results.push({ fullName: `${prefix}_sm12_latest_time`, value: bestTime, labels: {} });
+
+  // ── Free-form / optional string fields (presence + distinct only) ───
+  // LOCK_ARG and GUSRVB can be long and unique per lock — never used as
+  // DIMENSION labels for per-value count gauges (cardinality). USER_ID /
+  // GUSR / GTMARK are empty in the real payload — presence gauges keep
+  // them observable without emitting blank-label series. The raw values
+  // of all of these fields still survive per lock in sap_sm12_lock_info.
+  const presentCount = (fields) => countWhere(rows, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of rows) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  results.push({ fullName: `${prefix}_sm12_lock_arg_present`, value: presentCount(F.LOCK_ARG), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_lock_arg_distinct`, value: distinctCount(F.LOCK_ARG), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_user_id_present`, value: presentCount(F.USER_ID), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gusr_present`, value: presentCount(F.GUSR), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gusrvb_present`, value: presentCount(F.GUSRVB), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gusrvb_distinct`, value: distinctCount(F.GUSRVB), labels: {} });
+  results.push({ fullName: `${prefix}_sm12_gtmark_present`, value: presentCount(F.GTMARK), labels: {} });
+
+  // ── Per-lock info — every lock entry preserved ──────────────────────
+  // One series per lock entry so the SM12 monitor can reconstruct each
+  // individual lock row (same pattern as sap_al08_session_info). All 17
+  // source fields are carried as snake_case labels with their RAW value
+  // (no trim, no normalisation): empty USER_ID / GTMARK stay "", numeric
+  // GUSE / GTWP / GTDATE stay "0" / "4" / "20260904", and GTHOST dot
+  // padding survives byte-for-byte. Absent fields become ''. The 128-char
+  // cap mirrors the AL08 session_info / labelVal convention.
+  //
+  // Lock identity = the full natural key: two rows that agree on every
+  // field ARE the same lock entry and share one series; entries that
+  // differ in TABLE / LOCK_ARG / user / host / timestamp each get their
+  // own series (e.g. TRDIR / ZEXPORT_MONITOR / AJAY and TRDIR /
+  // ZPRG_TEMP2 / AJAY never merge).
+  const infoVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).substring(0, 128);
+    }
+    return '';
+  };
+  for (const r of rows) {
+    results.push({
+      fullName: `${prefix}_sm12_lock_info`,
+      value: 1,
+      labels: {
+        table: infoVal(r, F.TABLE),
+        lock_arg: infoVal(r, F.LOCK_ARG),
+        user_id: infoVal(r, F.USER_ID),
+        gmode: infoVal(r, F.GMODE),
+        gusr: infoVal(r, F.GUSR),
+        gusrvb: infoVal(r, F.GUSRVB),
+        guse: infoVal(r, F.GUSE),
+        gusevb: infoVal(r, F.GUSEVB),
+        gobj: infoVal(r, F.GOBJ),
+        gclient: infoVal(r, F.GCLIENT),
+        guname: infoVal(r, F.GUNAME),
+        gthost: infoVal(r, F.GTHOST),
+        gtwp: infoVal(r, F.GTWP),
+        gtsysnr: infoVal(r, F.GTSYSNR),
+        gtdate: infoVal(r, F.GTDATE),
+        gttime: infoVal(r, F.GTTIME),
+        gtmark: infoVal(r, F.GTMARK),
+      },
+    });
+  }
 
   return results;
 }
 
 /**
  * SM50 — Work Processes
- * Actual JSON fields: wp_status, wp_typ, wp_bname, wp_cpu, wp_client, wp_no, wp_report
+ * =====================
+ * Source structure (from the REAL S3 payload — 21 records, 23 fields):
+ *   top-level: monitor_type
+ *   each data[] record (23 fields — ALL preserved below):
+ *     WP_NO         → wp_no          (string "0".."20")
+ *     WP_TYP        → wp_typ         (DIA/UPD/BGD/SPO/UP2)
+ *     WP_PID        → wp_pid         (OS process id string, e.g. "9531")
+ *     WP_ISTATUS    → wp_istatus     (JSON number — 2/4)
+ *     WP_STATUS     → wp_status      (Running/Waiting)
+ *     WP_WAITING    → wp_waiting     (often "")
+ *     WP_INTRESTART → wp_intrestart  (JSON number — 1)
+ *     WP_RESTART    → wp_restart     (Yes)
+ *     WP_DUMPS      → wp_dumps       (often "")
+ *     WP_CPU        → wp_cpu         (raw duration string, e.g. "0:04")
+ *     WP_ELTIME     → wp_eltime      (often "")
+ *     WP_MANDT      → wp_mandt       (client "811")
+ *     WP_BNAME      → wp_bname       (user AJAY)
+ *     WP_REPORT     → wp_report      (report SAPLTHFB)
+ *     WP_INTACTION  → wp_intaction   (JSON number — 0)
+ *     WP_ACTION     → wp_action      (often "")
+ *     WP_TABLE      → wp_table       (often "")
+ *     WP_SERVER     → wp_server      (often "")
+ *     WP_WAITINFO   → wp_waitinfo    (often "")
+ *     WP_WAITTIME   → wp_waittime    (often "")
+ *     WP_INDEX      → wp_index       (JSON number 0..20)
+ *     HOLD          → hold           (often "")
+ *     FAILURE       → failure        (raw — "0 " keeps its trailing space)
+ *
+ * Design:
+ *   - ALL legacy metric names/semantics are preserved unchanged: total_wp,
+ *     running_wp, waiting_wp, finished_wp, stopped_wp, dialog_wp,
+ *     background_wp, update_wp, spool_wp, enqueue_wp, cpu_seconds{type},
+ *     status_count{status}, type_count{type}, user_count{user},
+ *     client_count{client}.
+ *   - Complete-coverage additions (ADDITIVE, on top of the legacy block):
+ *       sap_sm50_monitor_type_count{monitor_type}
+ *       sap_sm50_total_work_processes (= data.length)
+ *       sap_sm50_<field>_present / _distinct for ALL 23 fields
+ *       sap_sm50_<field>_count{<field>} for ALL 23 fields (raw non-empty
+ *         values only — empty strings never become blank-label series)
+ *       sap_sm50_<field>_total / _max / _min for genuinely numeric fields
+ *       sap_sm50_work_process_info{...23 labels} — one series per record
+ *   - work_process_info is the single per-record metric (raw values, NO trim,
+ *     NO normalization). Every input record produces its own info series at
+ *     collector level — duplicates are NOT collapsed.
+ *   - Presence semantics: "" is ABSENT; any non-empty raw string AND numeric 0
+ *     are PRESENT; null/missing = absent. Distinct counts distinct raw
+ *     non-empty values; nothing is trimmed before presence/distinct testing.
+ *   - Numeric JSON fields (wp_istatus, wp_intrestart, wp_intaction,
+ *     wp_index) keep their exact 0/positive values and get total/max/min
+ *     aggregates. String fields that merely look numeric (wp_no "0",
+ *     wp_pid "9531", wp_cpu "0:04") are NOT treated as numbers — the JSON
+ *     data type is read from the actual value.
+ *   - Raw values stay raw everywhere: failure="0 " keeps its trailing space,
+ *     wp_cpu="0:04" stays a duration string, empty strings stay visible on
+ *     work_process_info.
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as SM20/SM21.
  */
-function collectSM50(rows, prefix) {
+function collectSM50(parsed, prefix) {
   const results = [];
-  const n = rows.length;
-  if (n === 0) return results;
 
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sm50_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SM50');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SM50' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SM50' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
+  const wps = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (wps.length === 0) return results;
+  const n = wps.length;
+
+  // ── Total work processes (MUST equal data.length, duplicates counted) ──
+  results.push({ fullName: `${prefix}_sm50_total_work_processes`, value: n, labels: {} });
+
+  // ── LEGACY metrics (names + semantics preserved unchanged) ──────────
   results.push({ fullName: `${prefix}_sm50_total_wp`, value: n, labels: {} });
 
   results.push({
     fullName: `${prefix}_sm50_running_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const s = r.WP_STATUS || r.wp_status || r.STATUS || '';
       return s === 'Running' || s === 'running' || s === 'RUNNING';
     }),
@@ -262,7 +700,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_waiting_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const s = r.WP_STATUS || r.wp_status || r.STATUS || '';
       return s === 'Waiting' || s === 'waiting' || s === 'WAITING';
     }),
@@ -271,7 +709,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_finished_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const s = r.WP_STATUS || r.wp_status || r.STATUS || '';
       return s === 'Finished' || s === 'finished' || s === 'FINISHED';
     }),
@@ -280,7 +718,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_dialog_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const t = r.WP_TYP || r.wp_typ || r.TYPE || r.WP_TYPE || '';
       return t === 'DIA';
     }),
@@ -289,7 +727,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_background_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const t = r.WP_TYP || r.wp_typ || r.TYPE || r.WP_TYPE || '';
       return t === 'BTC';
     }),
@@ -298,7 +736,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_update_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const t = r.WP_TYP || r.wp_typ || r.TYPE || r.WP_TYPE || '';
       return t === 'UPD';
     }),
@@ -307,7 +745,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_spool_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const t = r.WP_TYP || r.wp_typ || r.TYPE || r.WP_TYPE || '';
       return t === 'SPO';
     }),
@@ -316,7 +754,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_enqueue_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const t = r.WP_TYP || r.wp_typ || r.TYPE || r.WP_TYPE || '';
       return t === 'ENQ';
     }),
@@ -325,7 +763,7 @@ function collectSM50(rows, prefix) {
 
   results.push({
     fullName: `${prefix}_sm50_stopped_wp`,
-    value: countWhere(rows, (r) => {
+    value: countWhere(wps, (r) => {
       const s = r.WP_STATUS || r.wp_status || r.STATUS || '';
       return s === 'Stopped' || s === 'stopped' || s === 'STOPPED';
     }),
@@ -335,7 +773,7 @@ function collectSM50(rows, prefix) {
   // CPU seconds per type
   const types = ['DIA', 'BTC', 'UPD', 'SPO', 'ENQ'];
   for (const t of types) {
-    const typeRows = rows.filter((r) => {
+    const typeRows = wps.filter((r) => {
       const wt = r.WP_TYP || r.wp_typ || r.TYPE || r.WP_TYPE || '';
       return wt === t;
     });
@@ -345,26 +783,237 @@ function collectSM50(rows, prefix) {
     }
   }
 
-  for (const [status, cnt] of freqMap(rows, ['WP_STATUS', 'wp_status', 'STATUS']))
+  for (const [status, cnt] of freqMap(wps, ['WP_STATUS', 'wp_status', 'STATUS']))
     results.push({ fullName: `${prefix}_sm50_status_count`, value: cnt, labels: { status } });
-  for (const [type, cnt] of freqMap(rows, ['WP_TYP', 'wp_typ', 'TYPE', 'WP_TYPE']))
+  for (const [type, cnt] of freqMap(wps, ['WP_TYP', 'wp_typ', 'TYPE', 'WP_TYPE']))
     results.push({ fullName: `${prefix}_sm50_type_count`, value: cnt, labels: { type } });
-  for (const [user, cnt] of freqMap(rows, ['WP_BNAME', 'wp_bname', 'USER', 'BNAME']))
+  for (const [user, cnt] of freqMap(wps, ['WP_BNAME', 'wp_bname', 'USER', 'BNAME']))
     results.push({ fullName: `${prefix}_sm50_user_count`, value: cnt, labels: { user } });
-  for (const [client, cnt] of freqMap(rows, ['WP_CLIENT', 'wp_client', 'CLIENT']))
+  for (const [client, cnt] of freqMap(wps, ['WP_CLIENT', 'wp_client', 'CLIENT']))
     results.push({ fullName: `${prefix}_sm50_client_count`, value: cnt, labels: { client } });
+
+  // ── Candidate keys per source field — exact uppercase first, fallbacks ──
+  const F = {
+    WP_NO: ['WP_NO', 'wp_no', 'NO'],
+    WP_TYP: ['WP_TYP', 'wp_typ', 'TYPE', 'WP_TYPE', 'wp_type'],
+    WP_PID: ['WP_PID', 'wp_pid', 'PID'],
+    WP_ISTATUS: ['WP_ISTATUS', 'wp_istatus'],
+    WP_STATUS: ['WP_STATUS', 'wp_status', 'STATUS'],
+    WP_WAITING: ['WP_WAITING', 'wp_waiting'],
+    WP_INTRESTART: ['WP_INTRESTART', 'wp_intrestart'],
+    WP_RESTART: ['WP_RESTART', 'wp_restart'],
+    WP_DUMPS: ['WP_DUMPS', 'wp_dumps'],
+    WP_CPU: ['WP_CPU', 'wp_cpu', 'CPU', 'CPU_TIME'],
+    WP_ELTIME: ['WP_ELTIME', 'wp_eltime'],
+    WP_MANDT: ['WP_MANDT', 'wp_mandt', 'CLIENT', 'client'],
+    WP_BNAME: ['WP_BNAME', 'wp_bname', 'USER', 'user', 'BNAME'],
+    WP_REPORT: ['WP_REPORT', 'wp_report', 'REPORT'],
+    WP_INTACTION: ['WP_INTACTION', 'wp_intaction'],
+    WP_ACTION: ['WP_ACTION', 'wp_action'],
+    WP_TABLE: ['WP_TABLE', 'wp_table'],
+    WP_SERVER: ['WP_SERVER', 'wp_server'],
+    WP_WAITINFO: ['WP_WAITINFO', 'wp_waitinfo'],
+    WP_WAITTIME: ['WP_WAITTIME', 'wp_waittime'],
+    WP_INDEX: ['WP_INDEX', 'wp_index'],
+    HOLD: ['HOLD', 'hold'],
+    FAILURE: ['FAILURE', 'failure'],
+  };
+  // snake_case label name per source field — 1:1, in source order.
+  const FIELD_NAMES = [
+    ['wp_no', F.WP_NO],
+    ['wp_typ', F.WP_TYP],
+    ['wp_pid', F.WP_PID],
+    ['wp_istatus', F.WP_ISTATUS],
+    ['wp_status', F.WP_STATUS],
+    ['wp_waiting', F.WP_WAITING],
+    ['wp_intrestart', F.WP_INTRESTART],
+    ['wp_restart', F.WP_RESTART],
+    ['wp_dumps', F.WP_DUMPS],
+    ['wp_cpu', F.WP_CPU],
+    ['wp_eltime', F.WP_ELTIME],
+    ['wp_mandt', F.WP_MANDT],
+    ['wp_bname', F.WP_BNAME],
+    ['wp_report', F.WP_REPORT],
+    ['wp_intaction', F.WP_INTACTION],
+    ['wp_action', F.WP_ACTION],
+    ['wp_table', F.WP_TABLE],
+    ['wp_server', F.WP_SERVER],
+    ['wp_waitinfo', F.WP_WAITINFO],
+    ['wp_waittime', F.WP_WAITTIME],
+    ['wp_index', F.WP_INDEX],
+    ['hold', F.HOLD],
+    ['failure', F.FAILURE],
+  ];
+
+  // ── Raw label value helpers (NO trim, NO normalization) ────────────
+  // work_process_info / count labels carry the exact source bytes. Only
+  // absent (undefined/null) values become ''. The 128-char cap follows the
+  // existing labelVal/rowFieldVal convention. Numeric 0 stringifies to "0"
+  // and therefore counts as PRESENT (never treated as missing).
+  const rawVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw);
+    }
+    return '';
+  };
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+
+  // ── Presence + distinct for ALL 23 fields ──────────────────────────
+  // "" = absent; any non-empty raw string / numeric 0 = present. No trim
+  // before testing; distinct = distinct raw non-empty values. Numeric zero
+  // stringifies to "0" → PRESENT, never treated as missing.
+  const presentCount = (fields) => countWhere(wps, (r) => rawVal(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of wps) {
+      const v = rawVal(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_sm50_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_sm50_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  // ── Per-value count metrics for ALL 23 fields ──────────────────────
+  // Raw non-empty values become the label (numeric 0 → "0"); empty strings
+  // never become blank-label series. Counts every occurrence — duplicates
+  // are NOT collapsed.
+  for (const [name, fields] of FIELD_NAMES) {
+    for (const [value, cnt] of freqMap(wps, fields))
+      results.push({ fullName: `${prefix}_sm50_${name}_count`, value: cnt, labels: { [name]: value } });
+  }
+
+  // ── Numeric aggregates for genuinely numeric fields ────────────────
+  // A field qualifies only when its ACTUAL JSON value type is number (not
+  // merely numeric-looking strings like "0" / "9531" / "0:04"). Missing /
+  // empty values are skipped — never converted to zero. Exact 0 / positive
+  // values are preserved (sum/max/min emit 0 when every value is 0).
+  for (const [name, fields] of FIELD_NAMES) {
+    let total = 0;
+    let max = null;
+    let min = null;
+    let count = 0;
+    for (const r of wps) {
+      const raw = r[fields[0]];
+      if (typeof raw !== 'number') continue;
+      total += raw;
+      if (max === null || raw > max) max = raw;
+      if (min === null || raw < min) min = raw;
+      count++;
+    }
+    if (count === 0) continue; // not a numeric field in this payload
+    results.push({ fullName: `${prefix}_sm50_${name}_total`, value: parseFloat(total.toFixed(3)), labels: {} });
+    results.push({ fullName: `${prefix}_sm50_${name}_max`, value: max, labels: {} });
+    results.push({ fullName: `${prefix}_sm50_${name}_min`, value: min, labels: {} });
+  }
+
+  // ── Per-record work_process_info — ALL 23 fields, one series per record ──
+  // Raw label values (NO trim): failure="0 " keeps its trailing space,
+  // wp_cpu="0:04" stays a duration string, wp_istatus=4 stringifies to "4",
+  // empty wp_waiting=""/wp_mandt="" stay "". Every input record produces
+  // its own info series at collector level (duplicates are NOT deduplicated).
+  for (const r of wps) {
+    results.push({
+      fullName: `${prefix}_sm50_work_process_info`,
+      value: 1,
+      labels: {
+        wp_no: infoVal(r, F.WP_NO),
+        wp_typ: infoVal(r, F.WP_TYP),
+        wp_pid: infoVal(r, F.WP_PID),
+        wp_istatus: infoVal(r, F.WP_ISTATUS),
+        wp_status: infoVal(r, F.WP_STATUS),
+        wp_waiting: infoVal(r, F.WP_WAITING),
+        wp_intrestart: infoVal(r, F.WP_INTRESTART),
+        wp_restart: infoVal(r, F.WP_RESTART),
+        wp_dumps: infoVal(r, F.WP_DUMPS),
+        wp_cpu: infoVal(r, F.WP_CPU),
+        wp_eltime: infoVal(r, F.WP_ELTIME),
+        wp_mandt: infoVal(r, F.WP_MANDT),
+        wp_bname: infoVal(r, F.WP_BNAME),
+        wp_report: infoVal(r, F.WP_REPORT),
+        wp_intaction: infoVal(r, F.WP_INTACTION),
+        wp_action: infoVal(r, F.WP_ACTION),
+        wp_table: infoVal(r, F.WP_TABLE),
+        wp_server: infoVal(r, F.WP_SERVER),
+        wp_waitinfo: infoVal(r, F.WP_WAITINFO),
+        wp_waittime: infoVal(r, F.WP_WAITTIME),
+        wp_index: infoVal(r, F.WP_INDEX),
+        hold: infoVal(r, F.HOLD),
+        failure: infoVal(r, F.FAILURE),
+      },
+    });
+  }
 
   return results;
 }
 
 /**
  * ST22 — ABAP Runtime Errors (Dumps)
- * Actual JSON fields (can be lowercase): dumpid, programname, syuser, syhost, sydate, syclient, sycode, syline, errtype, errtext
+ * =================================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record: sydate, sytime, syhost, syuser, dumpid, programname,
+ *                       includename, linenumber, errorAnalysis, shortText,
+ *                       include, lineno, program
+ *
+ * Design:
+ *   - All legacy metric names/labels are preserved unchanged so existing
+ *     Grafana consumers keep working.
+ *   - programname and program are SEPARATE source fields; likewise includename
+ *     and include. No equivalence is assumed even when values coincide.
+ *   - dumpid / includename / include / program / monitor_type are bounded
+ *     categoricals → per-value count metrics with labels.
+ *   - linenumber / lineno / sydate / sytime are numeric → scalar aggregate
+ *     gauges (sum / max / latest). Never labels, never a series per record.
+ *   - errorAnalysis / shortText are free text → presence + distinct scalar
+ *     gauges for aggregation, and they are ALSO carried verbatim (subject to
+ *     the shared 128-char label cap) on the per-dump sap_st22_dump_info series
+ *     so no source field is ever dropped.
+ *   - dump_info carries ALL 13 source fields as raw snake_case labels plus a
+ *     deterministic dump_key identity (sydate|sytime|dumpid|programname|
+ *     linenumber) so identical dump IDs at different times never collapse into
+ *     one series — mirrors sap_al08_session_info / sap_sm12_lock_info /
+ *     sap_sm50_work_process_info.
+ *
+ *   The label map per record therefore contains 14 keys (13 source fields +
+ *   dump_key).
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST06.
  */
-function collectST22(rows, prefix) {
+function collectST22(parsed, prefix) {
   const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_st22_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'ST22');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'ST22' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'ST22' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
   const n = rows.length;
-  if (n === 0) return results;
 
   results.push({ fullName: `${prefix}_st22_total_dumps`, value: n, labels: {} });
 
@@ -399,21 +1048,198 @@ function collectST22(rows, prefix) {
   for (const [code, cnt] of freqMap(rows, ['sycode', 'ERROR_CLASS', 'EXCEPT']))
     results.push({ fullName: `${prefix}_st22_error_code_count`, value: cnt, labels: { error_code: code } });
 
+  // ── dumpid — bounded categorical → per-value count ───────────────────
+  for (const [id, cnt] of freqMap(rows, ['dumpid', 'DUMPID']))
+    results.push({ fullName: `${prefix}_st22_dump_id_count`, value: cnt, labels: { dump_id: id } });
+
+  // ── includename / include — SEPARATE source fields → per-value counts ─
+  for (const [incName, cnt] of freqMap(rows, ['includename', 'INCLUDENAME']))
+    results.push({ fullName: `${prefix}_st22_includename_count`, value: cnt, labels: { includename: incName } });
+  for (const [inc, cnt] of freqMap(rows, ['include', 'INCLUDE']))
+    results.push({ fullName: `${prefix}_st22_include_count`, value: cnt, labels: { include: inc } });
+
+  // ── program — SEPARATE source field from programname → per-value count ──
+  for (const [prog, cnt] of freqMap(rows, ['program', 'PROGRAM']))
+    results.push({ fullName: `${prefix}_st22_program_field_count`, value: cnt, labels: { program_field: prog } });
+
+  // ── linenumber / lineno — numeric aggregates (no labels) ─────────────
+  results.push({ fullName: `${prefix}_st22_line_number_total`, value: sumField(rows, ['linenumber', 'LINENUMBER']), labels: {} });
+  let lineNumberMax = null;
+  for (const r of rows) {
+    const ln = numField(r, ['linenumber', 'LINENUMBER']);
+    if (ln !== null && (lineNumberMax === null || ln > lineNumberMax)) lineNumberMax = ln;
+  }
+  if (lineNumberMax !== null) results.push({ fullName: `${prefix}_st22_line_number_max`, value: lineNumberMax, labels: {} });
+
+  results.push({ fullName: `${prefix}_st22_line_no_total`, value: sumField(rows, ['lineno', 'LINENO']), labels: {} });
+  let lineNoMax = null;
+  for (const r of rows) {
+    const ln = numField(r, ['lineno', 'LINENO']);
+    if (ln !== null && (lineNoMax === null || ln > lineNoMax)) lineNoMax = ln;
+  }
+  if (lineNoMax !== null) results.push({ fullName: `${prefix}_st22_line_no_max`, value: lineNoMax, labels: {} });
+
+  // ── sydate / sytime — latest date+time pair as numeric gauges ────────
+  // Compared on the combined YYYYMMDDHHMMSS score so the newest pair wins —
+  // never the biggest sytime of an older day. Non-digit separators
+  // (2026-09-03, 13:51:07) are stripped before comparing.
+  let bestDate = null;
+  let bestTime = null;
+  let bestScore = null;
+  for (const r of rows) {
+    const d = digitsNumField(r, ['sydate', 'SYDATE', 'DATE', 'DATUM']);
+    const t = digitsNumField(r, ['sytime', 'SYTIME', 'TIME']);
+    if (d === null || t === null) continue;
+    const score = d * 1000000 + t;
+    if (bestScore === null || score > bestScore) {
+      bestScore = score;
+      bestDate = d;
+      bestTime = t;
+    }
+  }
+  if (bestDate === null) {
+    // No row carried both date and time — fall back to the max of each.
+    for (const r of rows) {
+      const d = digitsNumField(r, ['sydate', 'SYDATE', 'DATE', 'DATUM']);
+      if (d !== null && (bestDate === null || d > bestDate)) bestDate = d;
+      const t = digitsNumField(r, ['sytime', 'SYTIME', 'TIME']);
+      if (t !== null && (bestTime === null || t > bestTime)) bestTime = t;
+    }
+  }
+  if (bestDate !== null) results.push({ fullName: `${prefix}_st22_latest_date`, value: bestDate, labels: {} });
+  if (bestTime !== null) results.push({ fullName: `${prefix}_st22_latest_time`, value: bestTime, labels: {} });
+
+  // ── errorAnalysis / shortText — free text: presence + distinct scalars ─
+  // (The full text additionally survives per dump on the dump_info labels
+  // below — truncated only by the shared 128-char label cap, never dropped.)
+  const presentCount = (fields) => countWhere(rows, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of rows) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  results.push({ fullName: `${prefix}_st22_error_analysis_present`, value: presentCount(['errorAnalysis', 'ERRORANALYSIS', 'error_analysis']), labels: {} });
+  results.push({ fullName: `${prefix}_st22_error_analysis_distinct`, value: distinctCount(['errorAnalysis', 'ERRORANALYSIS', 'error_analysis']), labels: {} });
+  results.push({ fullName: `${prefix}_st22_short_text_present`, value: presentCount(['shortText', 'SHORTTEXT', 'short_text']), labels: {} });
+  results.push({ fullName: `${prefix}_st22_short_text_distinct`, value: distinctCount(['shortText', 'SHORTTEXT', 'short_text']), labels: {} });
+
+  // ── Per-dump info — one series per ABAP dump, ALL 13 source fields ──────
+  // Mirrors sap_al08_session_info / sap_sm12_lock_info /
+  // sap_sm50_work_process_info so the ST22 monitor can reconstruct each
+  // individual dump record. All 13 source fields are carried as snake_case
+  // labels with their RAW value (no trim, no normalisation): sydate
+  // "20260903", sytime "122744", linenumber "34" stays the raw string and
+  // lineno 34 (a JSON number) stringifies to "34", empty shortText/errorAnalysis
+  // stay ''. Absent fields become ''. The 128-char cap is the shared
+  // labelVal / infoVal convention used by every other per-record metric —
+  // long free text (errorAnalysis / shortText) is truncated to 128 chars on
+  // the label exactly like any other long value, never dropped.
+  //
+  // dump_key is a deterministic identity label (NOT one of the 13 source
+  // fields): raw sydate|sytime|dumpid|programname|linenumber joined by '|',
+  // capped at 110 chars so it always fits the poller's series_label
+  // VARCHAR(120). Two dumps sharing a dumpid at different times get different
+  // dump_keys and therefore stay separate series; the same dump re-scraped
+  // from the payload keeps exactly one series.
+  const F = {
+    SYDATE: ['sydate', 'SYDATE', 'DATE', 'DATUM'],
+    SYTIME: ['sytime', 'SYTIME', 'TIME'],
+    SYHOST: ['syhost', 'SYHOST', 'HOST', 'SERVER'],
+    SYUSER: ['syuser', 'SYUSER', 'USER', 'BNAME'],
+    DUMPID: ['dumpid', 'DUMPID', 'dump_id'],
+    PROGRAMNAME: ['programname', 'PROGRAMNAME'],
+    INCLUDENAME: ['includename', 'INCLUDENAME'],
+    LINENUMBER: ['linenumber', 'LINENUMBER'],
+    ERROR_ANALYSIS: ['errorAnalysis', 'ERRORANALYSIS', 'ERROR_ANALYSIS', 'error_analysis'],
+    SHORT_TEXT: ['shortText', 'SHORTTEXT', 'SHORT_TEXT', 'short_text'],
+    INCLUDE: ['include', 'INCLUDE'],
+    LINENO: ['lineno', 'LINENO'],
+    PROGRAM: ['program', 'PROGRAM'],
+  };
+  const rawVal = (r, fields) => {
+    for (const f of fields) {
+      const v = r[f];
+      if (v === undefined || v === null) continue;
+      return String(v);
+    }
+    return '';
+  };
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+  for (const r of rows) {
+    const identityParts = [
+      infoVal(r, F.SYDATE),
+      infoVal(r, F.SYTIME),
+      infoVal(r, F.DUMPID),
+      infoVal(r, F.PROGRAMNAME),
+      infoVal(r, F.LINENUMBER),
+    ];
+    const dumpKey = identityParts.join('|').substring(0, 110);
+    results.push({
+      fullName: `${prefix}_st22_dump_info`,
+      value: 1,
+      labels: {
+        sydate: infoVal(r, F.SYDATE),
+        sytime: infoVal(r, F.SYTIME),
+        syhost: infoVal(r, F.SYHOST),
+        syuser: infoVal(r, F.SYUSER),
+        dumpid: infoVal(r, F.DUMPID),
+        programname: infoVal(r, F.PROGRAMNAME),
+        includename: infoVal(r, F.INCLUDENAME),
+        linenumber: infoVal(r, F.LINENUMBER),
+        error_analysis: infoVal(r, F.ERROR_ANALYSIS),
+        short_text: infoVal(r, F.SHORT_TEXT),
+        include: infoVal(r, F.INCLUDE),
+        lineno: infoVal(r, F.LINENO),
+        program: infoVal(r, F.PROGRAM),
+        dump_key: dumpKey,
+      },
+    });
+  }
+
   return results;
 }
 
 /**
- * ST06 — System Performance
- * Actual JSON structure (SAP ST06 export):
+ * ST06 — System Performance (OS / CPU / Memory / Filesystems)
+ * ============================================================
+ * Current authoritative schema (verified in the real S3 payload):
  * {
- *   "cpu": { "0": { "user_cpu": 5.2, "sys_cpu": 1.1, "idle_cpu": 93.7, "wait_true": 0.0, ... }, ... },
- *   "memory": { "0": { "avg_fr_mem": ..., "avg_swapfr": ..., "avg_swapsz": ..., ... }, ... },
- *   "disk": { "0": { "avg_util": ..., "avg_queuel": ..., "avg_servic": ..., ... }, ... },
- *   "lan":   { "0": { "in_packets": ..., "out_packet": ..., "errors": ..., ... }, ... }
+ *   "monitor_type": "ST06",
+ *   "host": "SAPIDES",
+ *   "cpu":    [ { "numberOfCpus": 4, "systemUtilization": 0, "userUtilization": 1, "idle": 99 } ],
+ *   "memory": [ { "physical": ..., "freeValue": ..., "swapFree": ..., "swapConfigured": ... } ],
+ *   "fsys":   [ { "serialnr": 400, "fsysname": "/", "capacity": ..., "free": ..., "freeP": ... }, ... ]
  * }
  *
- * NOTE: Only averaged metrics are emitted (no per-core labels) to avoid
- * Prometheus label registration conflicts. Use avg() in Grafana queries.
+ * Legacy JSON shapes (cpu/memory/disk/lan as maps of per-core/per-sample
+ * records with user_cpu / sys_cpu / idle_cpu / wait_true and
+ * avg_fr_mem / avg_swapfr / avg_swapsz / in_pg_hour / out_pg_hou etc.)
+ * are still accepted — the legacy metrics below are preserved unchanged.
+ *
+ * Complete-coverage additions (additive — never remove/rename legacy
+ * metrics):
+ *   - top-level monitor_type / host are represented (monitor_type_count,
+ *     host_count, host_present, host_distinct);
+ *   - every cpu[] record → sap_st06_cpu_info{number_of_cpus,
+ *     system_utilization, user_utilization, idle} (raw values, 0 kept);
+ *   - every memory[] record → sap_st06_memory_info{physical, free_value,
+ *     swap_free, swap_configured} (decimal values preserved, not rounded);
+ *   - every fsys[] record → sap_st06_fsys_info{serialnr, fsysname,
+ *     capacity, free, free_p} (no deduplication — duplicate rows each get
+ *     their own series, fsysname keeps its raw path);
+ *   - per-filesystem numeric gauges sap_st06_filesystem_capacity /
+ *     sap_st06_filesystem_free / sap_st06_filesystem_free_percent with ONLY
+ *     the stable identity (serialnr + fsysname) as labels and the numeric
+ *     value as the gauge value (mirrors sap_db02_database_size_mb);
+ *   - per-field present/distinct validation for every section field;
+ *   - per-field numeric aggregates (total/max/min) with zero preservation.
+ *
+ * The collector receives the full parsed object (not just the data rows)
+ * so top-level monitor_type / host are observable too.
  */
 function collectST06(parsed, prefix) {
   const results = [];
@@ -536,6 +1362,235 @@ function collectST06(parsed, prefix) {
     if (totalErrors > 0) results.push({ fullName: `${prefix}_st06_network_errors`, value: Math.round(totalErrors / count), labels: {} });
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // COMPLETE-COVERAGE ADDITIONS (additive — every legacy metric above is
+  // preserved unchanged). Authoritative schema: monitor_type + host at the
+  // top level; cpu[] / memory[] / fsys[] record arrays.
+  // ═══════════════════════════════════════════════════════════════════
+
+  // ── Top-level monitor_type / host ──────────────────────────────────
+  const monitorType = strField(root, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_st06_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  const hostVal = strField(root, ['host', 'HOST']);
+  if (hostVal !== '') {
+    results.push({ fullName: `${prefix}_st06_host_count`, value: 1, labels: { host: hostVal } });
+  }
+  // Presence semantics: "" absent, any non-empty value (incl. numeric 0 in
+  // a stringified form) present. host is a scalar — present = distinct.
+  results.push({ fullName: `${prefix}_st06_host_present`, value: hostVal !== '' ? 1 : 0, labels: {} });
+  results.push({ fullName: `${prefix}_st06_host_distinct`, value: hostVal !== '' ? 1 : 0, labels: {} });
+
+  // Candidate keys per source field — exact camelCase field first, then
+  // snake_case / uppercase fallbacks (same fallback pattern as the other
+  // T-Code collectors).
+  const F = {
+    numberOfCpus: ['numberOfCpus', 'number_of_cpus', 'NUMBEROFCPUS'],
+    systemUtilization: ['systemUtilization', 'system_utilization', 'SYSTEMUTILIZATION'],
+    userUtilization: ['userUtilization', 'user_utilization', 'USERUTILIZATION'],
+    idle: ['idle', 'IDLE'],
+    physical: ['physical', 'PHYSICAL'],
+    freeValue: ['freeValue', 'free_value', 'FREEVALUE'],
+    swapFree: ['swapFree', 'swap_free', 'SWAPFREE'],
+    swapConfigured: ['swapConfigured', 'swap_configured', 'SWAPCONFIGURED'],
+    serialnr: ['serialnr', 'SERIALNR'],
+    fsysname: ['fsysname', 'FSYSNAME'],
+    capacity: ['capacity', 'CAPACITY'],
+    free: ['free', 'FREE'],
+    freeP: ['freeP', 'free_p', 'FREEP'],
+  };
+
+  // Raw info-label value: no trim, no coercion — exact source bytes survive
+  // (0 → "0", "" stays "", "/" stays "/"). Only absent (undefined/null)
+  // values become ''. The 128-char cap follows labelVal/rowFieldVal.
+  const rawInfoVal = (r, keys) => {
+    for (const k of keys) {
+      const raw = r[k];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).substring(0, 128);
+    }
+    return '';
+  };
+
+  // Presence = records whose raw value stringifies to a non-empty string
+  // (numeric 0 → "0" → present). Empty strings are absent here but stay
+  // observable on the info series below.
+  const sectionPresent = (records, keys) => countWhere(records, (r) => strField(r, keys) !== '');
+  const sectionDistinct = (records, keys) => {
+    const seen = new Set();
+    for (const r of records) {
+      const v = strField(r, keys);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  // Numeric aggregates over a section — zeros count, decimal precision is
+  // preserved (no toFixed / integer rounding).
+  const sectionAgg = (records, keys) => {
+    let count = 0;
+    let total = 0;
+    let max = null;
+    let min = null;
+    for (const r of records) {
+      const v = numField(r, keys);
+      if (v === null) continue;
+      count++;
+      total += v;
+      if (max === null || v > max) max = v;
+      if (min === null || v < min) min = v;
+    }
+    return { count, total, max, min };
+  };
+
+  const emitFieldValidation = (records, label, keys) => {
+    results.push({ fullName: `${prefix}_st06_${label}_present`, value: sectionPresent(records, keys), labels: {} });
+    results.push({ fullName: `${prefix}_st06_${label}_distinct`, value: sectionDistinct(records, keys), labels: {} });
+  };
+
+  const emitFieldAggregates = (records, label, keys) => {
+    const a = sectionAgg(records, keys);
+    if (a.count === 0) return;
+    results.push({ fullName: `${prefix}_st06_${label}_total`, value: a.total, labels: {} });
+    results.push({ fullName: `${prefix}_st06_${label}_max`, value: a.max, labels: {} });
+    results.push({ fullName: `${prefix}_st06_${label}_min`, value: a.min, labels: {} });
+  };
+
+  // ── CPU section ────────────────────────────────────────────────────
+  const cpuRecords = (Array.isArray(root.cpu) ? root.cpu : Array.isArray(root.CPU) ? root.CPU : [])
+    .filter((r) => typeof r === 'object' && r !== null);
+  if (cpuRecords.length > 0) {
+    results.push({ fullName: `${prefix}_st06_cpu_count`, value: cpuRecords.length, labels: {} });
+
+    // One info series per CPU record — all 4 source fields as labels.
+    for (const r of cpuRecords) {
+      results.push({
+        fullName: `${prefix}_st06_cpu_info`,
+        value: 1,
+        labels: {
+          number_of_cpus: rawInfoVal(r, F.numberOfCpus),
+          system_utilization: rawInfoVal(r, F.systemUtilization),
+          user_utilization: rawInfoVal(r, F.userUtilization),
+          idle: rawInfoVal(r, F.idle),
+        },
+      });
+    }
+
+    // Field validation + numeric aggregates for all 4 CPU fields.
+    for (const [label, keys] of [
+      ['number_of_cpus', F.numberOfCpus],
+      ['system_utilization', F.systemUtilization],
+      ['user_utilization', F.userUtilization],
+      ['idle', F.idle],
+    ]) {
+      emitFieldValidation(cpuRecords, label, keys);
+      emitFieldAggregates(cpuRecords, label, keys);
+    }
+  }
+
+  // ── MEMORY section ────────────────────────────────────────────────
+  const memRecords = (Array.isArray(root.memory) ? root.memory : Array.isArray(root.MEMORY) ? root.MEMORY : [])
+    .filter((r) => typeof r === 'object' && r !== null);
+  if (memRecords.length > 0) {
+    // One info series per memory record — decimal values kept verbatim.
+    for (const r of memRecords) {
+      results.push({
+        fullName: `${prefix}_st06_memory_info`,
+        value: 1,
+        labels: {
+          physical: rawInfoVal(r, F.physical),
+          free_value: rawInfoVal(r, F.freeValue),
+          swap_free: rawInfoVal(r, F.swapFree),
+          swap_configured: rawInfoVal(r, F.swapConfigured),
+        },
+      });
+    }
+
+    // Field validation + numeric aggregates for all 4 memory fields.
+    for (const [label, keys] of [
+      ['physical', F.physical],
+      ['free_value', F.freeValue],
+      ['swap_free', F.swapFree],
+      ['swap_configured', F.swapConfigured],
+    ]) {
+      emitFieldValidation(memRecords, label, keys);
+      emitFieldAggregates(memRecords, label, keys);
+    }
+  }
+
+  // ── FSYS section ───────────────────────────────────────────────────
+  const fsysRecords = (Array.isArray(root.fsys) ? root.fsys : Array.isArray(root.FSYS) ? root.FSYS : [])
+    .filter((r) => typeof r === 'object' && r !== null);
+  if (fsysRecords.length > 0) {
+    results.push({ fullName: `${prefix}_st06_total_filesystems`, value: fsysRecords.length, labels: {} });
+
+    // One info series per filesystem record — all 5 source fields as
+    // labels. Duplicate rows are NOT deduplicated: every record emits its
+    // own series and fsysname keeps its raw path.
+    for (const r of fsysRecords) {
+      results.push({
+        fullName: `${prefix}_st06_fsys_info`,
+        value: 1,
+        labels: {
+          serialnr: rawInfoVal(r, F.serialnr),
+          fsysname: rawInfoVal(r, F.fsysname),
+          capacity: rawInfoVal(r, F.capacity),
+          free: rawInfoVal(r, F.free),
+          free_p: rawInfoVal(r, F.freeP),
+        },
+      });
+    }
+
+    // ── Per-filesystem numeric gauges (additive — fsys_info above is
+    // untouched). Changing numeric values (capacity / free / freeP) must NOT
+    // live in Prometheus labels; they are exposed as gauge values with ONLY
+    // the stable identity (serialnr + fsysname) as labels — mirrors
+    // sap_db02_database_size_mb{database_name}. Every record emits its own
+    // entries (duplicates are NOT deduplicated); records missing a numeric
+    // field simply don't emit that gauge. A record with an empty fsysname
+    // still emits with the raw identity labels, exactly like fsys_info.
+    for (const r of fsysRecords) {
+      const identity = {
+        serialnr: rawInfoVal(r, F.serialnr),
+        fsysname: rawInfoVal(r, F.fsysname),
+      };
+      const capacity = numField(r, F.capacity);
+      const free = numField(r, F.free);
+      const freeP = numField(r, F.freeP);
+      if (capacity !== null) {
+        results.push({ fullName: `${prefix}_st06_filesystem_capacity`, value: capacity, labels: { ...identity } });
+      }
+      if (free !== null) {
+        results.push({ fullName: `${prefix}_st06_filesystem_free`, value: free, labels: { ...identity } });
+      }
+      if (freeP !== null) {
+        results.push({ fullName: `${prefix}_st06_filesystem_free_percent`, value: freeP, labels: { ...identity } });
+      }
+    }
+
+    // Per-value counts on the bounded categoricals (freqMap skips empty
+    // values, so no blank-label series is emitted).
+    for (const [sn, cnt] of freqMap(fsysRecords, F.serialnr))
+      results.push({ fullName: `${prefix}_st06_serialnr_count`, value: cnt, labels: { serialnr: sn } });
+    for (const [name, cnt] of freqMap(fsysRecords, F.fsysname))
+      results.push({ fullName: `${prefix}_st06_fsysname_count`, value: cnt, labels: { fsysname: name } });
+
+    // Field validation + numeric aggregates for all 5 fsys fields.
+    // fsysname is non-numeric → its aggregates are skipped by sectionAgg.
+    for (const [label, keys] of [
+      ['serialnr', F.serialnr],
+      ['fsysname', F.fsysname],
+      ['capacity', F.capacity],
+      ['free', F.free],
+      ['free_p', F.freeP],
+    ]) {
+      emitFieldValidation(fsysRecords, label, keys);
+      emitFieldAggregates(fsysRecords, label, keys);
+    }
+  }
+
   return results;
 }
 
@@ -598,11 +1653,57 @@ function collectDB02(rows, prefix) {
 
 /**
  * SM13 — Update Requests
- * Actual JSON: { "data": [ { vbkey, vbusr, vbdate, vbtimoff, vbstate, vbtcode, vbfunc }, ... ] }
+ * ======================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record: vbkey, vbusr, vbdate, vbtimoff, vbstate, vbrc,
+ *                       vbtcode, vbreport, vbfunc, status, errorClass,
+ *                       errorNumber, errorText
  * vbstate: 0/1=open, 2=in process, 3/5=finished, 4=error, 255=initial/unknown.
+ *
+ * Design:
+ *   - All legacy metric names/labels are preserved unchanged so existing
+ *     Grafana consumers keep working.
+ *   - vbkey is a unique-per-record update-request key → presence + distinct
+ *     scalar gauges only (never a label — no per-record series).
+ *   - vbtimoff / vbrc / vbdate are numeric → scalar aggregate gauges
+ *     (total / max / min / latest). Never labels.
+ *   - vbreport / status / errorClass / errorNumber are bounded categoricals →
+ *     per-value count metrics with labels.
+ *   - errorText is free text → presence + distinct scalar gauges only; the
+ *     text itself is NEVER used as a Prometheus label.
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/ST06.
  */
-function collectSM13(rows, prefix) {
+function collectSM13(parsed, prefix) {
   const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sm13_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SM13');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SM13' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SM13' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
   const updates = rows.filter((r) => typeof r === 'object' && r !== null);
   if (updates.length === 0) return results;
 
@@ -650,20 +1751,155 @@ function collectSM13(rows, prefix) {
   for (const [func, cnt] of freqMap(updates, ['vbfunc', 'VBFUNC', 'function', 'FUNCTION']))
     results.push({ fullName: `${prefix}_sm13_function_count`, value: cnt, labels: { update_function: func } });
 
+  // ── vbkey — unique update-request key: presence + distinct scalars ──
+  // Never a label: vbkey is effectively unique per record, so a label would
+  // create one series per update request (forbidden by the design rules).
+  const presentCount = (fields) => countWhere(updates, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of updates) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  results.push({ fullName: `${prefix}_sm13_vbkey_present`, value: presentCount(['vbkey', 'VBKEY']), labels: {} });
+  results.push({ fullName: `${prefix}_sm13_vbkey_distinct`, value: distinctCount(['vbkey', 'VBKEY']), labels: {} });
+
+  // ── vbdate — latest full timestamp as a numeric gauge (YYYYMMDDHHMMSS) ──
+  let latestDate = null;
+  for (const r of updates) {
+    const d = digitsNumField(r, ['vbdate', 'VBDATE', 'date', 'DATE']);
+    if (d !== null && (latestDate === null || d > latestDate)) latestDate = d;
+  }
+  if (latestDate !== null) results.push({ fullName: `${prefix}_sm13_latest_date`, value: latestDate, labels: {} });
+
+  // ── vbtimoff — numeric aggregates (total / max / min) ───────────────
+  results.push({ fullName: `${prefix}_sm13_vbtimoff_total`, value: sumField(updates, ['vbtimoff', 'VBTIMOFF']), labels: {} });
+  let vbtimoffMax = null;
+  let vbtimoffMin = null;
+  for (const r of updates) {
+    const v = numField(r, ['vbtimoff', 'VBTIMOFF']);
+    if (v !== null) {
+      if (vbtimoffMax === null || v > vbtimoffMax) vbtimoffMax = v;
+      if (vbtimoffMin === null || v < vbtimoffMin) vbtimoffMin = v;
+    }
+  }
+  if (vbtimoffMax !== null) results.push({ fullName: `${prefix}_sm13_vbtimoff_max`, value: vbtimoffMax, labels: {} });
+  if (vbtimoffMin !== null) results.push({ fullName: `${prefix}_sm13_vbtimoff_min`, value: vbtimoffMin, labels: {} });
+
+  // ── vbrc — numeric aggregates (total / max) ─────────────────────────
+  results.push({ fullName: `${prefix}_sm13_vbrc_total`, value: sumField(updates, ['vbrc', 'VBRC']), labels: {} });
+  let vbrcMax = null;
+  for (const r of updates) {
+    const v = numField(r, ['vbrc', 'VBRC']);
+    if (v !== null && (vbrcMax === null || v > vbrcMax)) vbrcMax = v;
+  }
+  if (vbrcMax !== null) results.push({ fullName: `${prefix}_sm13_vbrc_max`, value: vbrcMax, labels: {} });
+
+  // ── vbreport — bounded categorical → per-value count ────────────────
+  for (const [report, cnt] of freqMap(updates, ['vbreport', 'VBREPORT', 'report', 'REPORT']))
+    results.push({ fullName: `${prefix}_sm13_report_count`, value: cnt, labels: { report } });
+
+  // ── status — bounded status text → per-value count ──────────────────
+  for (const [status, cnt] of freqMap(updates, ['status', 'STATUS']))
+    results.push({ fullName: `${prefix}_sm13_status_count`, value: cnt, labels: { status } });
+
+  // ── errorClass / errorNumber — bounded categoricals → per-value counts ──
+  for (const [cls, cnt] of freqMap(updates, ['errorClass', 'ERRORCLASS', 'error_class']))
+    results.push({ fullName: `${prefix}_sm13_error_class_count`, value: cnt, labels: { error_class: cls } });
+  for (const [num, cnt] of freqMap(updates, ['errorNumber', 'ERRORNUMBER', 'error_number']))
+    results.push({ fullName: `${prefix}_sm13_error_number_count`, value: cnt, labels: { error_number: num } });
+
+  // ── errorText — free text: presence + distinct scalars (never a label) ──
+  results.push({ fullName: `${prefix}_sm13_error_text_present`, value: presentCount(['errorText', 'ERRORTEXT', 'error_text']), labels: {} });
+  results.push({ fullName: `${prefix}_sm13_error_text_distinct`, value: distinctCount(['errorText', 'ERRORTEXT', 'error_text']), labels: {} });
+
   return results;
 }
 
 /**
  * SM20 — Security Audit Log
- * Expected JSON: { "data": [ { USER/USERNAME, EVENT/EVENTID, MESSAGE/TEXT, SEVERITY, TCODE, PROGRAM, TERMINAL }, ... ] }
+ * =========================
+ * Source structure (verified from the REAL S3 payload — 2666 records):
+ *   top-level: monitor_type
+ *   each data[] record (5 fields — ALL preserved below):
+ *     SENDER_ID → sender_id   (audit-log sender / instance, e.g. SAPIDES_JCI_00)
+ *     USER      → user
+ *     TERMINAL  → terminal
+ *     TCODE     → tcode
+ *     CLIENT    → client
+ *
+ * NOTE: The real SM20 payload does NOT contain EVENT/EVENTID, SEVERITY,
+ * MESSAGE/TEXT or PROGRAM fields. The legacy classifiers below read those
+ * candidate keys and therefore simply stay zero/absent — that behaviour is
+ * preserved unchanged, byte-for-byte.
+ *
+ * Design:
+ *   - ALL legacy metrics are preserved unchanged (names, labels, severity
+ *     buckets, keyword classifications, calculations): total_events,
+ *     critical_events, severe_events, other_events,
+ *     successful_logons/failed_logons/rfc_logons/rfc_calls{user},
+ *     user_count{user}, program_count{program}, terminal_count{terminal},
+ *     tcode_count{tcode}.
+ *   - Complete-coverage additions (ADDITIVE, on top of the legacy block):
+ *       sap_sm20_monitor_type_count{monitor_type}
+ *       sap_sm20_event_info{5 labels} — one series per record (no dedup)
+ *       sap_sm20_sender_id_count{sender_id}, sap_sm20_client_count{client}
+ *         (the user/terminal/tcode per-value counts already exist under the
+ *         legacy names user_count/terminal_count/tcode_count)
+ *       sap_sm20_<field>_present / _distinct for ALL 5 fields
+ *   - event_info labels carry RAW source values: no trim, no normalization;
+ *     empty strings ("") stay observable. Numeric 0 would stringify to "0"
+ *     and count as PRESENT. The real payload is all strings — no decimal or
+ *     leading-zero numeric concerns arise, and raw "000"/"811" client codes
+ *     are kept verbatim.
+ *   - The real payload has NO numeric fields → no *_total/_max/_min
+ *     aggregates are appropriate; nothing is fabricated.
+ *   - Duplicate records are NOT collapsed: total_events counts every row and
+ *     every row emits its own event_info series at collector level (identical
+ *     all-5 label sets collapse only at Prometheus exposition — that is not
+ *     field loss).
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
  */
-function collectSM20(rows, prefix) {
+function collectSM20(parsed, prefix) {
   const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sm20_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SM20');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SM20' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SM20' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
   const events = rows.filter((r) => typeof r === 'object' && r !== null);
   if (events.length === 0) return results;
 
+  // ── Total events (MUST equal data.length, duplicates counted) ──────
   results.push({ fullName: `${prefix}_sm20_total_events`, value: events.length, labels: {} });
 
+  // ── LEGACY metrics (names + semantics preserved unchanged) ──────────
   let critical = 0;
   let severe = 0;
   const logonSuccess = new Map();
@@ -717,21 +1953,195 @@ function collectSM20(rows, prefix) {
   for (const [tcode, cnt] of freqMap(events, ['TCODE', 'tcode']))
     results.push({ fullName: `${prefix}_sm20_tcode_count`, value: cnt, labels: { tcode } });
 
+  // ── Candidate keys per source field — exact uppercase first, fallbacks ──
+  const F = {
+    SENDER_ID: ['SENDER_ID', 'sender_id', 'SENDERID'],
+    USER: ['USER', 'USERNAME', 'LOGONID', 'user', 'BNAME'],
+    TERMINAL: ['TERMINAL', 'terminal'],
+    TCODE: ['TCODE', 'tcode'],
+    CLIENT: ['CLIENT', 'client', 'MANDT'],
+    EVENT_ID: ['EVENT_ID', 'EVENTID', 'event_id', 'ROW_ID', 'row_id', 'ID', 'id', 'EVENT', 'event'],
+  };
+  // snake_case label name per source field — 1:1, in source order.
+  const FIELD_NAMES = [
+    ['sender_id', F.SENDER_ID],
+    ['user', F.USER],
+    ['terminal', F.TERMINAL],
+    ['tcode', F.TCODE],
+    ['client', F.CLIENT],
+  ];
+
+  // ── Raw label value helpers (NO trim, NO normalization) ────────────
+  // event_info / count labels carry the exact source bytes. Only absent
+  // (undefined/null) values become ''. The 128-char cap follows the
+  // existing labelVal/rowFieldVal convention. Numeric 0 stringifies to "0"
+  // and therefore counts as PRESENT (never treated as missing).
+  const rawVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw);
+    }
+    return '';
+  };
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+
+  // ── Presence + distinct for ALL 5 fields ───────────────────────────
+  // "" = absent; any non-empty raw string / numeric 0 = present. No trim
+  // before testing; distinct = distinct raw non-empty values.
+  const presentCount = (fields) => countWhere(events, (r) => rawVal(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of events) {
+      const v = rawVal(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_sm20_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_sm20_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  // ── Remaining per-value count metrics (section requirement) ─────────
+  // user/terminal/tcode counts already exist above under the legacy names
+  // user_count / terminal_count / tcode_count with the same labels; only
+  // sender_id and client need new count metrics. Empty values never become
+  // blank-label series.
+  for (const [name, fields] of [
+    ['sender_id', F.SENDER_ID],
+    ['client', F.CLIENT],
+  ]) {
+    for (const [value, cnt] of freqMap(events, fields))
+      results.push({ fullName: `${prefix}_sm20_${name}_count`, value: cnt, labels: { [name]: value } });
+  }
+
+  // ── Per-record event_info — ALL 5 fields, one series per record ────
+  // Raw label values (NO trim): empty user/terminal/tcode/client stay "",
+  // client="000"/"811" keep their exact codes. Every input record produces
+  // its own info series with a deterministic event_key so all 2666 events
+  // survive Prometheus exposition into the monitoring store without collision.
+  for (let idx = 0; idx < events.length; idx++) {
+    const r = events[idx];
+    const rawEventId = rawVal(r, F.EVENT_ID);
+    const senderId = infoVal(r, F.SENDER_ID);
+    const client = infoVal(r, F.CLIENT);
+    const user = infoVal(r, F.USER);
+    const tcode = infoVal(r, F.TCODE);
+    const terminal = infoVal(r, F.TERMINAL);
+    const eventKey = rawEventId !== ''
+      ? rawEventId.substring(0, 110)
+      : [senderId, client, user, tcode, terminal, String(idx)].join('|').substring(0, 110);
+
+    results.push({
+      fullName: `${prefix}_sm20_event_info`,
+      value: 1,
+      labels: {
+        sender_id: senderId,
+        user: user,
+        terminal: terminal,
+        tcode: tcode,
+        client: client,
+        event_key: eventKey,
+      },
+    });
+  }
+
   return results;
 }
 
 /**
  * SM21 — System Log
- * Actual JSON: { "data": [ { ZDATE, ZTIME, INSTANCE, WP_TYPE, SEVERITY, MESSAGEID, TEXT, DEVCLASS, ERRNO, ERRORNAME }, ... ] }
- * SAP system-log severity: 01=info, 02=warning, 03=error, 04+=critical; 08=short dump.
+ * =================
+ * Source structure (from the real S3 payload — 271 records, 15 fields):
+ *   top-level: monitor_type
+ *   each data[] record (15 fields — ALL preserved below):
+ *     ZDATE      → zdate      (raw YYYYMMDD string, latest_date numeric)
+ *     ZTIME      → ztime      (raw HHMMSS string, latest_time numeric)
+ *     INSTANCE   → instance
+ *     PROCESSID  → process_id (leading zeroes kept, e.g. "000", "008")
+ *     TERMINAL   → terminal   (raw — " no TTY" keeps its leading space)
+ *     ZUSER      → zuser
+ *     TCODE      → tcode
+ *     WP_TYPE    → wp_type
+ *     CLIENT     → client
+ *     SEVERITY   → severity   (raw "01"/"02"/"04"/"08", never "1")
+ *     MESSAGEID  → message_id
+ *     TEXT       → text       (free text — info + presence/distinct only)
+ *     DEVCLASS   → devclass
+ *     ERRNO      → errno      (raw — "  1" keeps spaces)
+ *     ERRORNAME  → error_name
+ *
+ * Design:
+ *   - ALL legacy metric names/semantics are preserved unchanged: total_messages,
+ *     critical/error/warning/system_messages, message_count{severity},
+ *     user_count{user}, unique_instances, unique_error_types,
+ *     instance_count{instance}, work_process_count{wp_type},
+ *     error_number_count{errno}, error_name_count{error_name},
+ *     component_count{devclass}, message_text_count{text}.
+ *   - Complete-coverage additions (ADDITIVE, on top of the legacy block):
+ *       sap_sm21_monitor_type_count{monitor_type}
+ *       sap_sm21_<field>_count{<field>} for process_id / terminal / tcode /
+ *         wp_type / client / severity / message_id / devclass / errno (the
+ *         remaining per-value counts already existed under section-5 names)
+ *       sap_sm21_<field>_present / _distinct for ALL 15 fields
+ *       sap_sm21_latest_date / latest_time (combined ZDATE+ZTIME pair)
+ *       message_info extended to ALL 15 source labels
+ *   - message_info is the single per-record metric (one series per message at
+ *     collector level; raw values, NO trim). It carries exactly 15
+ *     source-derived snake_case labels — zero field loss by construction.
+ *   - Presence semantics: "" is ABSENT, any non-empty raw string is PRESENT
+ *     ("000", "01", "04" all present); distinct counts distinct raw non-empty
+ *     values; nothing is trimmed before presence/distinct testing. Empty
+ *     strings stay observable on message_info and never become blank count
+ *     labels.
+ *   - TEXT is free text → represented on message_info{text} and through
+ *     text_present/text_distinct ONLY. The pre-existing message_text_count
+ *     (legacy) is preserved, but no NEW per-text aggregation is created.
+ *   - ERRNO and ERRORNAME stay SEPARATE source fields — never merged.
+ *   - Duplicate records are NOT collapsed: total_messages counts every row and
+ *     every row emits its own message_info series at collector level (identical
+ *     all-15 label sets collapse only at Prometheus exposition — that is not
+ *     field loss).
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
  */
-function collectSM21(rows, prefix) {
+function collectSM21(parsed, prefix) {
   const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sm21_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SM21');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SM21' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SM21' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
   const messages = rows.filter((r) => typeof r === 'object' && r !== null);
   if (messages.length === 0) return results;
 
+  // ── Total messages (MUST equal data.length, duplicates counted) ────
   results.push({ fullName: `${prefix}_sm21_total_messages`, value: messages.length, labels: {} });
 
+  // ── LEGACY metrics (names + semantics preserved unchanged) ──────────
   let critical = 0;
   let error = 0;
   let warning = 0;
@@ -758,7 +2168,6 @@ function collectSM21(rows, prefix) {
   for (const [user, cnt] of freqMap(messages, ['ZUSER', 'zuser', 'USER', 'user']))
     results.push({ fullName: `${prefix}_sm21_user_count`, value: cnt, labels: { user } });
 
-  // ── Additive metrics (enterprise dashboard panels 1220–1234) ──────────
   const instances = new Set();
   const errorNames = new Set();
   for (const r of messages) {
@@ -783,24 +2192,138 @@ function collectSM21(rows, prefix) {
   for (const [txt, cnt] of freqMap(messages, ['TEXT', 'text']))
     results.push({ fullName: `${prefix}_sm21_message_text_count`, value: cnt, labels: { text: txt } });
 
-  // Info-style metric: one series per system-log message (value always 1).
-  // Every SM21 record carries the full field set, so all rows are emitted.
+  // ── Candidate keys per source field — exact uppercase first, fallbacks ──
+  const F = {
+    ZDATE: ['ZDATE', 'zdate'],
+    ZTIME: ['ZTIME', 'ztime'],
+    INSTANCE: ['INSTANCE', 'instance'],
+    PROCESSID: ['PROCESSID', 'processid', 'PROCESS_ID', 'process_id'],
+    TERMINAL: ['TERMINAL', 'terminal'],
+    ZUSER: ['ZUSER', 'zuser', 'USER', 'user'],
+    TCODE: ['TCODE', 'tcode'],
+    WP_TYPE: ['WP_TYPE', 'wp_type', 'TYPE'],
+    CLIENT: ['CLIENT', 'client'],
+    SEVERITY: ['SEVERITY', 'severity'],
+    MESSAGEID: ['MESSAGEID', 'messageid', 'MESSAGE_ID', 'message_id'],
+    TEXT: ['TEXT', 'text'],
+    DEVCLASS: ['DEVCLASS', 'devclass'],
+    ERRNO: ['ERRNO', 'errno'],
+    ERRORNAME: ['ERRORNAME', 'errorname', 'ERROR_NAME', 'error_name'],
+  };
+  // snake_case label name per source field — 1:1, in source order.
+  const FIELD_NAMES = [
+    ['zdate', F.ZDATE],
+    ['ztime', F.ZTIME],
+    ['instance', F.INSTANCE],
+    ['process_id', F.PROCESSID],
+    ['terminal', F.TERMINAL],
+    ['zuser', F.ZUSER],
+    ['tcode', F.TCODE],
+    ['wp_type', F.WP_TYPE],
+    ['client', F.CLIENT],
+    ['severity', F.SEVERITY],
+    ['message_id', F.MESSAGEID],
+    ['text', F.TEXT],
+    ['devclass', F.DEVCLASS],
+    ['errno', F.ERRNO],
+    ['error_name', F.ERRORNAME],
+  ];
+
+  // ── Raw label value helpers (NO trim, NO normalization) ────────────
+  const rawVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw);
+    }
+    return '';
+  };
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+
+  // ── Presence + distinct for ALL 15 fields ──────────────────────────
+  // "" = absent; non-empty raw string ("000", "01", " no TTY") = present.
+  // No trim before testing; distinct = distinct raw non-empty values.
+  const presentCount = (fields) => countWhere(messages, (r) => rawVal(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of messages) {
+      const v = rawVal(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_sm21_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_sm21_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  // ── Safe per-value count metrics (section-5 names) ─────────────────
+  // Empty values never become blank-label series. Raw non-empty values are
+  // grouped (no trim) — e.g. errno "  1" stays a separate label from "1".
+  // instance_count / user_count / error_name_count already exist above with
+  // the exact section-5 names and are NOT duplicated here.
+  for (const [name, fields] of [
+    ['process_id', F.PROCESSID],
+    ['terminal', F.TERMINAL],
+    ['tcode', F.TCODE],
+    ['wp_type', F.WP_TYPE],
+    ['client', F.CLIENT],
+    ['severity', F.SEVERITY],
+    ['message_id', F.MESSAGEID],
+    ['devclass', F.DEVCLASS],
+    ['errno', F.ERRNO],
+  ]) {
+    for (const [value, cnt] of freqMap(messages, fields))
+      results.push({ fullName: `${prefix}_sm21_${name}_count`, value: cnt, labels: { [name]: value } });
+  }
+
+  // ── Latest ZDATE+ZTIME — combined pair from the SAME record ────────
+  // Compared on the combined YYYYMMDDHHMMSS score so the newest date+time
+  // pair wins together — never the max date with the max time independently.
+  // Numeric gauges may drop leading zeroes (050945 → 50945); the raw strings
+  // stay on message_info.
+  let bestDate = null;
+  let bestTime = null;
+  let bestScore = null;
+  for (const r of messages) {
+    const d = digitsNumField(r, F.ZDATE);
+    const t = digitsNumField(r, F.ZTIME);
+    if (d === null || t === null) continue;
+    const score = d * 1000000 + t;
+    if (bestScore === null || score > bestScore) {
+      bestScore = score;
+      bestDate = d;
+      bestTime = t;
+    }
+  }
+  if (bestDate !== null) results.push({ fullName: `${prefix}_sm21_latest_date`, value: bestDate, labels: {} });
+  if (bestTime !== null) results.push({ fullName: `${prefix}_sm21_latest_time`, value: bestTime, labels: {} });
+
+  // ── Per-record message_info — ALL 15 fields, one series per record ──
+  // Raw label values (NO trim): terminal=" no TTY" keeps its leading space,
+  // errno="  1" keeps its spaces, process_id="000" keeps leading zeroes,
+  // severity="01" stays "01", empty tcode=""/client=""/zuser="" stay "".
+  // Every input record produces its own info series at collector level.
   for (const r of messages) {
     results.push({
       fullName: `${prefix}_sm21_message_info`,
       value: 1,
       labels: {
-        zdate: strField(r, ['ZDATE', 'zdate']),
-        ztime: strField(r, ['ZTIME', 'ztime']),
-        instance: strField(r, ['INSTANCE', 'instance']),
-        wp_type: strField(r, ['WP_TYPE', 'wp_type']),
-        severity: strField(r, ['SEVERITY', 'severity']),
-        messageid: strField(r, ['MESSAGEID', 'messageid']),
-        text: strField(r, ['TEXT', 'text']),
-        devclass: strField(r, ['DEVCLASS', 'devclass']),
-        errno: strField(r, ['ERRNO', 'errno']),
-        error_name: strField(r, ['ERRORNAME', 'errorname']),
-        user: strField(r, ['ZUSER', 'zuser', 'USER', 'user']),
+        zdate: infoVal(r, F.ZDATE),
+        ztime: infoVal(r, F.ZTIME),
+        instance: infoVal(r, F.INSTANCE),
+        process_id: infoVal(r, F.PROCESSID),
+        terminal: infoVal(r, F.TERMINAL),
+        zuser: infoVal(r, F.ZUSER),
+        tcode: infoVal(r, F.TCODE),
+        wp_type: infoVal(r, F.WP_TYPE),
+        client: infoVal(r, F.CLIENT),
+        severity: infoVal(r, F.SEVERITY),
+        message_id: infoVal(r, F.MESSAGEID),
+        text: infoVal(r, F.TEXT),
+        devclass: infoVal(r, F.DEVCLASS),
+        errno: infoVal(r, F.ERRNO),
+        error_name: infoVal(r, F.ERRORNAME),
       },
     });
   }
@@ -810,23 +2333,131 @@ function collectSM21(rows, prefix) {
 
 /**
  * SM37 — Background Job Overview
- * Expected JSON: { "data": [ { JOBNAME, JOBCOUNT, STATUS, SDLUNAME, REPORT, ... }, ... ] }
- * SAP job status: F=finished, R/Y=released/running, S/P=scheduled/planned, A/Z/C/X=aborted.
+ * =============================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record (24 fields — ALL preserved below):
+ *     JOBNAME      → jobname_count{jobname}, jobname_present/distinct, job_info
+ *     JOBCOUNT     → jobcount_count{jobcount}, jobcount_present/distinct, job_info
+ *     JOBGROUP     → jobgroup_count{jobgroup}, jobgroup_present/distinct, job_info
+ *     INTREPORT    → intreport_count{intreport}, intreport_present/distinct, job_info
+ *     SDLSTRTDT    → latest_scheduled_date, sdlstrtdt_present/distinct, job_info
+ *     SDLSTRTTM    → latest_scheduled_time, sdlstrttm_present/distinct, job_info
+ *     SDLUNAME     → sdluname_count{sdluname} (+ legacy user_count{user}), present/distinct, job_info
+ *     LASTCHDATE   → latest_last_change_date, lastchdate_present/distinct, job_info
+ *     LASTCHTIME   → latest_last_change_time, lastchtime_present/distinct, job_info
+ *     LASTCHNAME   → lastchname_count{lastchname}, lastchname_present/distinct, job_info
+ *     STRTDATE     → latest_start_date, strtdate_present/distinct, job_info
+ *     STRTTIME     → latest_start_time, strttime_present/distinct, job_info
+ *     ENDDATE      → latest_end_date, enddate_present/distinct, job_info
+ *     ENDTIME      → latest_end_time, endtime_present/distinct, job_info
+ *     STATUS       → status_count{status} (+ legacy job_count{status} and the
+ *                    running/failed/finished/scheduled buckets), present/distinct, job_info
+ *     AUTHCKNAM    → authcknam_count{authcknam}, authcknam_present/distinct, job_info
+ *     SUCCNUM      → succnum_total, succnum_max, succnum_present/distinct, job_info ("0")
+ *     PREDNUM      → prednum_total, prednum_max, prednum_present/distinct, job_info ("0")
+ *     LASTSTRTDT   → latest_last_start_date, laststrtdt_present/distinct, job_info
+ *     LASTSTRTTM   → latest_last_start_time, laststrttm_present/distinct, job_info
+ *     JOBCLASS     → jobclass_count{jobclass}, jobclass_present/distinct, job_info
+ *     PRIORITY     → priority_total/max/min, priority_present/distinct, job_info ("0")
+ *     EXECSERVER   → execserver_count{execserver}, execserver_present/distinct, job_info
+ *     TGTSRVGRP    → tgtsrvgrp_count{tgtsrvgrp}, tgtsrvgrp_present/distinct, job_info
+ *
+ * Design:
+ *   - Legacy metric names (total_jobs, running/failed/finished/scheduled_jobs,
+ *     job_count{status}, user_count{user}) are preserved unchanged so existing
+ *     Grafana consumers keep working exactly as before.
+ *   - Empty strings are NOT treated as missing: presence/distinct counts treat
+ *     "" as absent, while job_info carries the raw "" label value, so empty vs
+ *     absent stays observable.
+ *   - Numeric zeros (SUCCNUM/PREDNUM/PRIORITY) are preserved: aggregate gauges
+ *     emit 0 and job_info keeps the original value as a string label.
+ *   - No truthy/falsy coercion of "", 0 or false-like values — fields are read
+ *     with explicit === checks (strField/numField/freqMap all keep 0).
+ *   - Date/time pairs are compared on the combined YYYYMMDDHHMMSS score so the
+ *     newest date+time pair always wins together; original YYYYMMDD/HHMMSS
+ *     values are retained verbatim on job_info labels.
+ *   - JOBCOUNT is the unique job counter — records sharing JOBNAME but differing
+ *     in JOBCOUNT stay separate (per-value counts + per-job info series).
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
  */
-function collectSM37(rows, prefix) {
+function collectSM37(parsed, prefix) {
   const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sm37_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SM37');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SM37' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SM37' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
   const jobs = rows.filter((r) => typeof r === 'object' && r !== null);
   if (jobs.length === 0) return results;
 
+  // Candidate keys per source field — exact uppercase field first, lower-case
+  // fallback after (same pattern as the other T-Code collectors).
+  const F = {
+    JOBNAME: ['JOBNAME', 'jobname'],
+    JOBCOUNT: ['JOBCOUNT', 'jobcount'],
+    JOBGROUP: ['JOBGROUP', 'jobgroup'],
+    INTREPORT: ['INTREPORT', 'intreport'],
+    SDLSTRTDT: ['SDLSTRTDT', 'sdlstrtdt'],
+    SDLSTRTTM: ['SDLSTRTTM', 'sdlstrttm'],
+    SDLUNAME: ['SDLUNAME', 'sdluname'],
+    LASTCHDATE: ['LASTCHDATE', 'lastchdate'],
+    LASTCHTIME: ['LASTCHTIME', 'lastchtime'],
+    LASTCHNAME: ['LASTCHNAME', 'lastchname'],
+    STRTDATE: ['STRTDATE', 'strtdate'],
+    STRTTIME: ['STRTTIME', 'strttime'],
+    ENDDATE: ['ENDDATE', 'enddate'],
+    ENDTIME: ['ENDTIME', 'endtime'],
+    STATUS: ['STATUS', 'status'],
+    AUTHCKNAM: ['AUTHCKNAM', 'authcknam'],
+    SUCCNUM: ['SUCCNUM', 'succnum'],
+    PREDNUM: ['PREDNUM', 'prednum'],
+    LASTSTRTDT: ['LASTSTRTDT', 'laststrtdt'],
+    LASTSTRTTM: ['LASTSTRTTM', 'laststrttm'],
+    JOBCLASS: ['JOBCLASS', 'jobclass'],
+    PRIORITY: ['PRIORITY', 'priority'],
+    EXECSERVER: ['EXECSERVER', 'execserver'],
+    TGTSRVGRP: ['TGTSRVGRP', 'tgtsrvgrp'],
+  };
+
+  // ── Total jobs ─────────────────────────────────────────────────────
   results.push({ fullName: `${prefix}_sm37_total_jobs`, value: jobs.length, labels: {} });
 
+  // ── STATUS — legacy buckets (unchanged semantics) + per-status counts ──
+  // SAP job status: F=finished, R/Y=released/running, S/P=scheduled/planned,
+  // A/Z/C/X=aborted. Unknown statuses land in the explicit "unknown" bucket.
+  // No status is hard-coded as the only possibility — any future status value
+  // is counted on status_count{status} and on the "unknown" bucket if needed.
   let running = 0;
   let failed = 0;
   let finished = 0;
   let scheduled = 0;
   const statusCounts = new Map();
   for (const r of jobs) {
-    const status = norm(r.STATUS || r.status || '');
+    const status = norm(strField(r, F.STATUS));
     const statusLabel = status || 'unknown';
     statusCounts.set(statusLabel, (statusCounts.get(statusLabel) || 0) + 1);
 
@@ -840,23 +2471,255 @@ function collectSM37(rows, prefix) {
   results.push({ fullName: `${prefix}_sm37_failed_jobs`, value: failed, labels: {} });
   results.push({ fullName: `${prefix}_sm37_finished_jobs`, value: finished, labels: {} });
   results.push({ fullName: `${prefix}_sm37_scheduled_jobs`, value: scheduled, labels: {} });
+  // Legacy per-status count — name preserved for existing consumers.
   for (const [status, cnt] of statusCounts)
     results.push({ fullName: `${prefix}_sm37_job_count`, value: cnt, labels: { status } });
+  // Recommended per-status count.
+  for (const [status, cnt] of statusCounts)
+    results.push({ fullName: `${prefix}_sm37_status_count`, value: cnt, labels: { status } });
+
+  // ── SDLUNAME — legacy user_count kept, plus recommended sdluname_count ──
   for (const [user, cnt] of freqMap(jobs, ['SDLUNAME', 'sdluname', 'USER', 'user']))
     results.push({ fullName: `${prefix}_sm37_user_count`, value: cnt, labels: { user } });
+  for (const [user, cnt] of freqMap(jobs, F.SDLUNAME))
+    results.push({ fullName: `${prefix}_sm37_sdluname_count`, value: cnt, labels: { sdluname: user } });
+
+  // ── Bounded categoricals → per-value count metrics with labels ─────
+  // freqMap skips empty values, so no blank-label series is emitted.
+  for (const [name, cnt] of freqMap(jobs, F.JOBNAME))
+    results.push({ fullName: `${prefix}_sm37_jobname_count`, value: cnt, labels: { jobname: name } });
+  for (const [count, cnt] of freqMap(jobs, F.JOBCOUNT))
+    results.push({ fullName: `${prefix}_sm37_jobcount_count`, value: cnt, labels: { jobcount: count } });
+  for (const [group, cnt] of freqMap(jobs, F.JOBGROUP))
+    results.push({ fullName: `${prefix}_sm37_jobgroup_count`, value: cnt, labels: { jobgroup: group } });
+  for (const [report, cnt] of freqMap(jobs, F.INTREPORT))
+    results.push({ fullName: `${prefix}_sm37_intreport_count`, value: cnt, labels: { intreport: report } });
+  for (const [name, cnt] of freqMap(jobs, F.LASTCHNAME))
+    results.push({ fullName: `${prefix}_sm37_lastchname_count`, value: cnt, labels: { lastchname: name } });
+  for (const [auth, cnt] of freqMap(jobs, F.AUTHCKNAM))
+    results.push({ fullName: `${prefix}_sm37_authcknam_count`, value: cnt, labels: { authcknam: auth } });
+  for (const [cls, cnt] of freqMap(jobs, F.JOBCLASS))
+    results.push({ fullName: `${prefix}_sm37_jobclass_count`, value: cnt, labels: { jobclass: cls } });
+  for (const [srv, cnt] of freqMap(jobs, F.EXECSERVER))
+    results.push({ fullName: `${prefix}_sm37_execserver_count`, value: cnt, labels: { execserver: srv } });
+  for (const [grp, cnt] of freqMap(jobs, F.TGTSRVGRP))
+    results.push({ fullName: `${prefix}_sm37_tgtsrvgrp_count`, value: cnt, labels: { tgtsrvgrp: grp } });
+
+  // ── Numeric aggregates (zeros preserved — no truthy/falsy checks) ──
+  results.push({ fullName: `${prefix}_sm37_succnum_total`, value: sumField(jobs, F.SUCCNUM), labels: {} });
+  results.push({ fullName: `${prefix}_sm37_prednum_total`, value: sumField(jobs, F.PREDNUM), labels: {} });
+  results.push({ fullName: `${prefix}_sm37_priority_total`, value: sumField(jobs, F.PRIORITY), labels: {} });
+  let succnumMax = null;
+  let prednumMax = null;
+  let priorityMax = null;
+  let priorityMin = null;
+  for (const r of jobs) {
+    const s = numField(r, F.SUCCNUM);
+    if (s !== null) { if (succnumMax === null || s > succnumMax) succnumMax = s; }
+    const p = numField(r, F.PREDNUM);
+    if (p !== null) { if (prednumMax === null || p > prednumMax) prednumMax = p; }
+    const pr = numField(r, F.PRIORITY);
+    if (pr !== null) {
+      if (priorityMax === null || pr > priorityMax) priorityMax = pr;
+      if (priorityMin === null || pr < priorityMin) priorityMin = pr;
+    }
+  }
+  if (succnumMax !== null) results.push({ fullName: `${prefix}_sm37_succnum_max`, value: succnumMax, labels: {} });
+  if (prednumMax !== null) results.push({ fullName: `${prefix}_sm37_prednum_max`, value: prednumMax, labels: {} });
+  if (priorityMax !== null) results.push({ fullName: `${prefix}_sm37_priority_max`, value: priorityMax, labels: {} });
+  if (priorityMin !== null) results.push({ fullName: `${prefix}_sm37_priority_min`, value: priorityMin, labels: {} });
+
+  // ── Date/time pairs — latest per pair as numeric gauges ────────────
+  // Compared on the combined YYYYMMDDHHMMSS score so the newest date+time
+  // pair wins together — never the biggest time of an older day. The
+  // original YYYYMMDD / HHMMSS values are retained on job_info labels.
+  const latestPair = (dateFields, timeFields) => {
+    let bestDate = null;
+    let bestTime = null;
+    let bestScore = null;
+    for (const r of jobs) {
+      const d = digitsNumField(r, dateFields);
+      const t = digitsNumField(r, timeFields);
+      if (d === null || t === null) continue;
+      const score = d * 1000000 + t;
+      if (bestScore === null || score > bestScore) {
+        bestScore = score;
+        bestDate = d;
+        bestTime = t;
+      }
+    }
+    if (bestDate === null) {
+      // No row carried both date and time — fall back to the max of each.
+      for (const r of jobs) {
+        const d = digitsNumField(r, dateFields);
+        if (d !== null && (bestDate === null || d > bestDate)) bestDate = d;
+        const t = digitsNumField(r, timeFields);
+        if (t !== null && (bestTime === null || t > bestTime)) bestTime = t;
+      }
+    }
+    return { date: bestDate, time: bestTime };
+  };
+
+  const datePairs = [
+    { dateFields: F.SDLSTRTDT, timeFields: F.SDLSTRTTM, dateName: 'latest_scheduled_date', timeName: 'latest_scheduled_time' },
+    { dateFields: F.STRTDATE, timeFields: F.STRTTIME, dateName: 'latest_start_date', timeName: 'latest_start_time' },
+    { dateFields: F.ENDDATE, timeFields: F.ENDTIME, dateName: 'latest_end_date', timeName: 'latest_end_time' },
+    { dateFields: F.LASTCHDATE, timeFields: F.LASTCHTIME, dateName: 'latest_last_change_date', timeName: 'latest_last_change_time' },
+    { dateFields: F.LASTSTRTDT, timeFields: F.LASTSTRTTM, dateName: 'latest_last_start_date', timeName: 'latest_last_start_time' },
+  ];
+  for (const pair of datePairs) {
+    const { date, time } = latestPair(pair.dateFields, pair.timeFields);
+    if (date !== null) results.push({ fullName: `${prefix}_sm37_${pair.dateName}`, value: date, labels: {} });
+    if (time !== null) results.push({ fullName: `${prefix}_sm37_${pair.timeName}`, value: time, labels: {} });
+  }
+
+  // ── Presence + distinct for ALL 24 fields ──────────────────────────
+  // present = records whose raw value stringifies to a non-empty string
+  // (numeric 0 → "0" → present). Empty strings remain distinguishable from
+  // absent fields via job_info, which carries the raw value verbatim.
+  const presentCount = (fields) => countWhere(jobs, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of jobs) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+  const FIELD_NAMES = [
+    ['jobname', F.JOBNAME],
+    ['jobcount', F.JOBCOUNT],
+    ['jobgroup', F.JOBGROUP],
+    ['intreport', F.INTREPORT],
+    ['sdlstrtdt', F.SDLSTRTDT],
+    ['sdlstrttm', F.SDLSTRTTM],
+    ['sdluname', F.SDLUNAME],
+    ['lastchdate', F.LASTCHDATE],
+    ['lastchtime', F.LASTCHTIME],
+    ['lastchname', F.LASTCHNAME],
+    ['strtdate', F.STRTDATE],
+    ['strttime', F.STRTTIME],
+    ['enddate', F.ENDDATE],
+    ['endtime', F.ENDTIME],
+    ['status', F.STATUS],
+    ['authcknam', F.AUTHCKNAM],
+    ['succnum', F.SUCCNUM],
+    ['prednum', F.PREDNUM],
+    ['laststrtdt', F.LASTSTRTDT],
+    ['laststrttm', F.LASTSTRTTM],
+    ['jobclass', F.JOBCLASS],
+    ['priority', F.PRIORITY],
+    ['execserver', F.EXECSERVER],
+    ['tgtsrvgrp', F.TGTSRVGRP],
+  ];
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_sm37_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_sm37_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  // ── Per-job info metric — every field preserved, one series per job ──
+  // All 24 source fields become snake_case labels carrying the raw value.
+  // Numeric values (SUCCNUM/PREDNUM/PRIORITY) are kept as strings ("0")
+  // while the numeric aggregate gauges above carry the numbers. Jobs with
+  // the same JOBNAME but different JOBCOUNT remain separate series.
+  const infoVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).trim().substring(0, 128);
+    }
+    return '';
+  };
+  for (const r of jobs) {
+    results.push({
+      fullName: `${prefix}_sm37_job_info`,
+      value: 1,
+      labels: {
+        jobname: infoVal(r, F.JOBNAME),
+        jobcount: infoVal(r, F.JOBCOUNT),
+        jobgroup: infoVal(r, F.JOBGROUP),
+        intreport: infoVal(r, F.INTREPORT),
+        sdlstrtdt: infoVal(r, F.SDLSTRTDT),
+        sdlstrttm: infoVal(r, F.SDLSTRTTM),
+        sdluname: infoVal(r, F.SDLUNAME),
+        lastchdate: infoVal(r, F.LASTCHDATE),
+        lastchtime: infoVal(r, F.LASTCHTIME),
+        lastchname: infoVal(r, F.LASTCHNAME),
+        strtdate: infoVal(r, F.STRTDATE),
+        strttime: infoVal(r, F.STRTTIME),
+        enddate: infoVal(r, F.ENDDATE),
+        endtime: infoVal(r, F.ENDTIME),
+        status: infoVal(r, F.STATUS),
+        authcknam: infoVal(r, F.AUTHCKNAM),
+        succnum: infoVal(r, F.SUCCNUM),
+        prednum: infoVal(r, F.PREDNUM),
+        laststrtdt: infoVal(r, F.LASTSTRTDT),
+        laststrttm: infoVal(r, F.LASTSTRTTM),
+        jobclass: infoVal(r, F.JOBCLASS),
+        priority: infoVal(r, F.PRIORITY),
+        execserver: infoVal(r, F.EXECSERVER),
+        tgtsrvgrp: infoVal(r, F.TGTSRVGRP),
+      },
+    });
+  }
 
   return results;
 }
 
 /**
  * SP01 — Spool Request Overview
- * Expected JSON: { "data": [ { RQIDENT, RQOWNER, RQDEST, RQCRETIME, RQFINAL, RQERROR }, ... ] }
+ * =============================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record: RQIDENT, RQOWNER, RQTITLE, RQDEST, RQCDATE,
+ *                       RQCRETIME, RQFINAL, RQERROR, RQ1NAME
+ *
+ * Design:
+ *   - All legacy metric names/labels are preserved unchanged so existing
+ *     Grafana consumers keep working (incl. sap_sp01_request_info, which
+ *     keeps its rqident label by explicit user decision to preserve
+ *     Grafana panel 1214).
+ *   - RQIDENT is a potentially high-cardinality request ID → presence +
+ *     distinct scalar gauges only. Never a label on any NEW metric.
+ *   - RQTITLE / RQ1NAME are free text → presence + distinct scalars only.
+ *   - RQCRETIME is YYYYMMDDHHMMSS00 → latest date + time as numeric gauges.
+ *   - RQERROR is numeric → sum (error_total) + per-value count.
+ *   - RQFINAL / RQOWNER / RQDEST are bounded categoricals → per-value
+ *     count metrics with labels.
+ *   - Empty strings are never emitted as blank-label series.
+ *
  * RQFINAL: "C"=completed, "."=pending, any other value=other.
  * RQERROR: "0"=no error, any non-zero value=error.
  * Legacy OUTSTATE/STATE payloads (WAIT/PRNT/ERROR/DONE/FINI) remain supported.
  */
-function collectSP01(rows, prefix) {
+function collectSP01(parsed, prefix) {
   const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sp01_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SP01');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SP01' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SP01' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
   const requests = rows.filter((r) => typeof r === 'object' && r !== null);
   if (requests.length === 0) return results;
 
@@ -956,6 +2819,181 @@ function collectSP01(rows, prefix) {
     });
   }
 
+  // ── New per-source-field metrics (all 10 source fields represented) ──
+  const presentCount = (fields) => countWhere(requests, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of requests) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  // RQIDENT — high-cardinality request ID: presence + distinct only (no label)
+  results.push({ fullName: `${prefix}_sp01_request_id_present`, value: presentCount(['RQIDENT', 'rqident']), labels: {} });
+  results.push({ fullName: `${prefix}_sp01_request_id_distinct`, value: distinctCount(['RQIDENT', 'rqident']), labels: {} });
+
+  // RQOWNER — bounded categorical → per-value count
+  for (const [owner, cnt] of freqMap(requests, ['RQOWNER', 'rqowner']))
+    results.push({ fullName: `${prefix}_sp01_owner_count`, value: cnt, labels: { owner } });
+
+  // RQTITLE — free text → presence + distinct (no label)
+  results.push({ fullName: `${prefix}_sp01_title_present`, value: presentCount(['RQTITLE', 'rqtitle']), labels: {} });
+  results.push({ fullName: `${prefix}_sp01_title_distinct`, value: distinctCount(['RQTITLE', 'rqtitle']), labels: {} });
+
+  // RQDEST — bounded categorical → per-value count
+  for (const [dest, cnt] of freqMap(requests, ['RQDEST', 'rqdest']))
+    results.push({ fullName: `${prefix}_sp01_destination_count`, value: cnt, labels: { destination: dest } });
+
+  // RQCDATE — empty in the real payload → presence + distinct (0 when absent)
+  results.push({ fullName: `${prefix}_sp01_creation_date_present`, value: presentCount(['RQCDATE', 'rqcdate']), labels: {} });
+  results.push({ fullName: `${prefix}_sp01_creation_date_distinct`, value: distinctCount(['RQCDATE', 'rqcdate']), labels: {} });
+
+  // RQCRETIME — YYYYMMDDHHMMSS00 → latest date + time as numeric gauges
+  let latestCreationDate = null;
+  let latestCreationTime = null;
+  for (const r of requests) {
+    const raw = strField(r, ['RQCRETIME', 'rqcretime']);
+    const m = raw.match(/^(\d{8})(\d{6})/);
+    if (!m) continue;
+    const date = parseInt(m[1], 10); // YYYYMMDD
+    const time = parseInt(m[2], 10); // HHMMSS (leading zeros are notation only)
+    const score = date * 1000000 + time;
+    if (latestCreationDate === null || score > latestCreationDate * 1000000 + latestCreationTime) {
+      latestCreationDate = date;
+      latestCreationTime = time;
+    }
+  }
+  if (latestCreationDate !== null) results.push({ fullName: `${prefix}_sp01_latest_creation_date`, value: latestCreationDate, labels: {} });
+  if (latestCreationTime !== null) results.push({ fullName: `${prefix}_sp01_latest_creation_time`, value: latestCreationTime, labels: {} });
+
+  // RQFINAL — bounded categorical → per-value count
+  for (const [finalStatus, cnt] of freqMap(requests, ['RQFINAL', 'rqfinal']))
+    results.push({ fullName: `${prefix}_sp01_final_status_count`, value: cnt, labels: { final_status: finalStatus } });
+
+  // RQERROR — numeric: sum + per-value count
+  results.push({ fullName: `${prefix}_sp01_error_total`, value: sumField(requests, ['RQERROR', 'rqerror']), labels: {} });
+  for (const [err, cnt] of freqMap(requests, ['RQERROR', 'rqerror']))
+    results.push({ fullName: `${prefix}_sp01_error_count`, value: cnt, labels: { error: err } });
+
+  // RQ1NAME — free text → presence + distinct (no label)
+  results.push({ fullName: `${prefix}_sp01_rq1name_present`, value: presentCount(['RQ1NAME', 'rq1name']), labels: {} });
+  results.push({ fullName: `${prefix}_sp01_rq1name_distinct`, value: distinctCount(['RQ1NAME', 'rq1name']), labels: {} });
+
+  return results;
+}
+
+/**
+ * SP12 — TemSe Data Administration (Consistency Check Output)
+ * ============================================================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record is a single output line: { "line": "..." }
+ *
+ * The payload is a fixed-format report. Every line's information is
+ * represented through bounded/derived metrics — raw line text is NEVER
+ * used as a Prometheus label (lines are arbitrary, unbounded text).
+ * Empty lines are skipped entirely (no blank-label series).
+ *
+ * Lines observed in the payload:
+ *   "TemSe: Data Consistency Check"        → check_type_present
+ *   "Consistency check of table TST01..."  → check_description_present
+ *   ""                                     → skipped
+ *   "System JCI 03.09.2026 17:15:06"       → latest_check_date / _time
+ *                                             (DD.MM.YYYY HH:MM:SS)
+ *   "| No Data              |"             → no_data flag (1 = box present)
+ *   "    11766 TemSe objects were checked" → temse_objects_checked
+ *   "TST01 is OK"                          → tst01_status (OK = 1)
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
+ */
+function collectSP12(parsed, prefix) {
+  const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_sp12_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SP12');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SP12' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SP12' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
+  // Each record carries exactly one field: the output line text.
+  const lines = rows
+    .filter((r) => r && typeof r === 'object')
+    .map((r) => strField(r, ['line', 'LINE', 'text', 'TEXT']));
+  const nonEmpty = lines.filter((l) => l !== '');
+
+  // ── line count / presence / distinct (empty lines excluded) ────────
+  results.push({ fullName: `${prefix}_sp12_line_count`, value: lines.length, labels: {} });
+  results.push({ fullName: `${prefix}_sp12_line_present`, value: nonEmpty.length, labels: {} });
+  results.push({ fullName: `${prefix}_sp12_line_distinct`, value: new Set(nonEmpty).size, labels: {} });
+
+  // ── check type / description presence (observed fixed header lines) ──
+  results.push({ fullName: `${prefix}_sp12_check_type_present`, value: nonEmpty.some((l) => /^TemSe\s*:/.test(l)) ? 1 : 0, labels: {} });
+  results.push({ fullName: `${prefix}_sp12_check_description_present`, value: nonEmpty.some((l) => /^Consistency check/i.test(l)) ? 1 : 0, labels: {} });
+
+  // ── "System JCI 03.09.2026 17:15:06" → DD.MM.YYYY HH:MM:SS ─────────
+  // Reordered to YYYYMMDD / HHMMSS. The newest date+time pair wins.
+  let latestDate = null;
+  let latestTime = null;
+  for (const l of nonEmpty) {
+    const m = l.match(/(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+    if (m) {
+      const date = parseInt(m[3] + m[2] + m[1], 10); // YYYYMMDD
+      const time = parseInt(m[4] + m[5] + m[6], 10); // HHMMSS
+      const score = date * 1000000 + time;
+      if (latestDate === null || score > latestDate * 1000000 + latestTime) {
+        latestDate = date;
+        latestTime = time;
+      }
+    }
+  }
+  if (latestDate !== null) results.push({ fullName: `${prefix}_sp12_latest_check_date`, value: latestDate, labels: {} });
+  if (latestTime !== null) results.push({ fullName: `${prefix}_sp12_latest_check_time`, value: latestTime, labels: {} });
+
+  // ── "| No Data |" box flag (1 = box present in the report) ──────────
+  results.push({ fullName: `${prefix}_sp12_no_data`, value: nonEmpty.some((l) => /No Data/.test(l)) ? 1 : 0, labels: {} });
+
+  // ── "11766 TemSe objects were checked" → count ──────────────────────
+  let temseCount = null;
+  for (const l of nonEmpty) {
+    const m = l.match(/([\d.,]+)\s*TemSe\s+objects?\s+were\s+checked/i);
+    if (m) {
+      const n = parseFloat(m[1].replace(/[,.\s]/g, ''));
+      if (!Number.isNaN(n)) temseCount = n;
+    }
+  }
+  if (temseCount !== null) results.push({ fullName: `${prefix}_sp12_temse_objects_checked`, value: temseCount, labels: {} });
+
+  // ── "TST01 is OK" → status (OK = 1, otherwise 0) ────────────────────
+  let tst01Status = null;
+  for (const l of nonEmpty) {
+    if (/TST01/.test(l)) {
+      tst01Status = /OK/.test(l) ? 1 : 0;
+    }
+  }
+  if (tst01Status !== null) results.push({ fullName: `${prefix}_sp12_tst01_status`, value: tst01Status, labels: {} });
+
   return results;
 }
 
@@ -1043,13 +3081,224 @@ function collectST03N(rows, prefix) {
 }
 
 /**
- * STRUST — Certificate Store (X.509)
- * Actual JSON: { "data": [ { PSE_CONTEXT, PSE_APPLIC, PSE_DESCRIPT, CERTIFICATE (base64 DER) }, ... ] }
- * Certificates are DECODED with @peculiar/x509. Raw Base64 is NEVER exposed to Prometheus.
+ * STRUST — Certificate Store (PSE / certificates)
+ * ===============================================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record (7 fields — ALL preserved below):
+ *     PSE_DESCRIPT → pse_descript
+ *     SUBJECT      → subject
+ *     SUBJECT_ALT  → subject_alt
+ *     ISSUER       → issuer
+ *     VALID_FROM   → valid_from
+ *     VALID_TO     → valid_to
+ *     CERTIFICATE  → certificate
+ *
+ * Design:
+ *   - Legacy X.509 metrics (certificate_days_remaining / certificate_expired /
+ *     certificate_expiring / certificate_count) are preserved unchanged —
+ *     certificates are still DECODED with @peculiar/x509 and raw Base64 is
+ *     never exposed to Prometheus.
+ *   - The complete-coverage block below is ADDITIVE:
+ *       sap_strust_monitor_type_count{monitor_type}
+ *       sap_strust_total_records                      (== data.length)
+ *       sap_strust_pse_info{7 labels}                 (one series per record)
+ *       sap_strust_<field>_count{<field>}             (occurrence counts)
+ *       sap_strust_<field>_present / _distinct        (for ALL 7 fields)
+ *   - pse_info labels carry RAW source values: no trim, no normalization;
+ *     empty strings stay "" (subject="" stays visible) — zero field loss.
+ *   - Presence semantics: "" is ABSENT, any non-empty raw string is PRESENT;
+ *     distinct counts distinct raw non-empty values; no trimming anywhere.
+ *   - Duplicate records are NOT collapsed: total_records counts every row and
+ *     every row emits its own pse_info series.
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
  */
-function collectSTRUST(rows, prefix) {
+function collectSTRUST(parsed, prefix) {
   const results = [];
-  const certs = rows.filter((r) => typeof r === 'object' && r !== null && r.CERTIFICATE);
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_strust_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'STRUST');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'STRUST' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'STRUST' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
+  const records = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (records.length === 0) return results;
+
+  // ── Total records / PSE count ───────────────────────────────────────
+  results.push({ fullName: `${prefix}_strust_total_records`, value: records.length, labels: {} });
+  results.push({ fullName: `${prefix}_strust_total_pse`, value: records.length, labels: {} });
+
+  // ── Status counts (valid, expiring within 30d, expired, error) ─────
+  const now = new Date();
+  const EXPIRING_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+  let validPse = 0;
+  let expiringPse = 0;
+  let expiredPse = 0;
+  for (const r of records) {
+    const toStr = (r.VALID_TO !== undefined && r.VALID_TO !== null ? String(r.VALID_TO) : (r.valid_to !== undefined && r.valid_to !== null ? String(r.valid_to) : '')).trim();
+    if (toStr !== '') {
+      let d = null;
+      if (toStr.includes('-') || toStr.includes('T') || toStr.includes('Z')) {
+        const parsedD = new Date(toStr);
+        if (!Number.isNaN(parsedD.getTime())) d = parsedD;
+      } else if (/^\d{8}/.test(toStr)) {
+        const y = parseInt(toStr.slice(0, 4), 10);
+        const mo = parseInt(toStr.slice(4, 6), 10) - 1;
+        const dy = parseInt(toStr.slice(6, 8), 10);
+        const parsedD = new Date(y, mo, dy);
+        if (!Number.isNaN(parsedD.getTime())) d = parsedD;
+      }
+      if (d) {
+        if (d < now) expiredPse++;
+        else if (d.getTime() - now.getTime() <= EXPIRING_WINDOW_MS) expiringPse++;
+        else validPse++;
+      }
+    }
+  }
+  results.push({ fullName: `${prefix}_strust_valid_pse`, value: validPse, labels: {} });
+  results.push({ fullName: `${prefix}_strust_expiring_pse`, value: expiringPse, labels: {} });
+  results.push({ fullName: `${prefix}_strust_expired_pse`, value: expiredPse, labels: {} });
+  results.push({ fullName: `${prefix}_strust_error_pse`, value: 0, labels: {} });
+
+  // Candidate keys per source field — exact uppercase field first, lower-case
+  // fallback after (same pattern as the other T-Code collectors).
+  const F = {
+    PSE_DESCRIPT: ['PSE_DESCRIPT', 'pse_descript'],
+    SUBJECT: ['SUBJECT', 'subject'],
+    SUBJECT_ALT: ['SUBJECT_ALT', 'subject_alt'],
+    ISSUER: ['ISSUER', 'issuer'],
+    VALID_FROM: ['VALID_FROM', 'valid_from'],
+    VALID_TO: ['VALID_TO', 'valid_to'],
+    CERTIFICATE: ['CERTIFICATE', 'certificate'],
+  };
+  // snake_case label name per source field — 1:1, in source order.
+  const FIELD_NAMES = [
+    ['pse_descript', F.PSE_DESCRIPT],
+    ['subject', F.SUBJECT],
+    ['subject_alt', F.SUBJECT_ALT],
+    ['issuer', F.ISSUER],
+    ['valid_from', F.VALID_FROM],
+    ['valid_to', F.VALID_TO],
+    ['certificate', F.CERTIFICATE],
+  ];
+
+  // ── Raw label value helpers (NO trim, NO normalization) ────────────
+  // pse_info / count labels carry the exact source bytes. Only absent
+  // (undefined/null) values become ''. The 128-char cap follows the
+  // existing labelVal/rowFieldVal convention.
+  const rawVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw);
+    }
+    return '';
+  };
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+
+  // Presence = records whose RAW value stringifies to a non-empty string
+  // (no trim: a whitespace-only value still counts as present). Empty
+  // strings are absent here but stay observable on the pse_info series.
+  const presentCount = (fields) => countWhere(records, (r) => rawVal(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of records) {
+      const v = rawVal(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  // ── Per-field count metrics (occurrences in source records) ────────
+  // Counted on the raw non-empty stringified value — duplicate records count
+  // all occurrences, identical values are grouped. Empty strings never become
+  // blank-label series. Label value capped at 128 chars (labelVal convention).
+  for (const [name, fields] of FIELD_NAMES) {
+    const counts = new Map();
+    for (const r of records) {
+      const v = rawVal(r, fields);
+      if (v === '') continue;
+      const key = v.substring(0, 128);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    for (const [value, cnt] of counts) {
+      results.push({ fullName: `${prefix}_strust_${name}_count`, value: cnt, labels: { [name]: value } });
+      if (name === 'pse_descript') {
+        results.push({ fullName: `${prefix}_strust_description_count`, value: cnt, labels: { pse_descript: value } });
+      }
+    }
+  }
+
+  // ── Per-record certificate_info & pse_info ──────────────────────────
+  // Both metric names emitted for compatibility.
+  // Includes record_index (deterministic discriminator derived from source array order)
+  // so duplicate-looking records (such as empty certificate fields or duplicate "Standard"
+  // entries) do not collapse into a single Prometheus series.
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    const recordIndex = String(i);
+    results.push({
+      fullName: `${prefix}_strust_certificate_info`,
+      value: 1,
+      labels: {
+        pse_descript: infoVal(r, F.PSE_DESCRIPT),
+        subject: infoVal(r, F.SUBJECT),
+        subject_alt: infoVal(r, F.SUBJECT_ALT),
+        issuer: infoVal(r, F.ISSUER),
+        valid_from: infoVal(r, F.VALID_FROM),
+        valid_to: infoVal(r, F.VALID_TO),
+        certificate: infoVal(r, F.CERTIFICATE),
+        record_index: recordIndex,
+      },
+    });
+    results.push({
+      fullName: `${prefix}_strust_pse_info`,
+      value: 1,
+      labels: {
+        pse_descript: infoVal(r, F.PSE_DESCRIPT),
+        subject: infoVal(r, F.SUBJECT),
+        subject_alt: infoVal(r, F.SUBJECT_ALT),
+        issuer: infoVal(r, F.ISSUER),
+        valid_from: infoVal(r, F.VALID_FROM),
+        valid_to: infoVal(r, F.VALID_TO),
+        certificate: infoVal(r, F.CERTIFICATE),
+      },
+    });
+  }
+
+
+  // ── Presence + distinct for ALL 7 fields ───────────────────────────
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_strust_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_strust_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  // ── Legacy X.509 certificate metrics (names + semantics preserved) ──
+  // Certificates are DECODED with @peculiar/x509. Raw Base64 is NEVER
+  // exposed to Prometheus — only identity/validity metadata.
+  const certs = records.filter((r) => typeof r === 'object' && r !== null && r.CERTIFICATE);
   if (certs.length === 0) return results;
 
   let decoded = 0;
@@ -1112,6 +3361,381 @@ function collectSTRUST(rows, prefix) {
   return results;
 }
 
+/**
+ * SLICENSE — Software Licenses
+ * ============================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record (8 fields — ALL preserved below):
+ *     product        → product
+ *     description    → description
+ *     hardwareKey    → hardware_key
+ *     installationNo → installation_no
+ *     systemNo       → system_no
+ *     validFrom      → valid_from
+ *     validTo        → valid_to
+ *     status         → status
+ *
+ * Design:
+ *   - Complete-coverage block (additive; SLICENSE had no prior metrics):
+ *       sap_slicense_monitor_type_count{monitor_type}
+ *       sap_slicense_total_licenses                   (== data.length)
+ *       sap_slicense_license_info{8 labels}           (one series per record)
+ *       sap_slicense_<field>_count{<field>}           (occurrence counts)
+ *       sap_slicense_<field>_present / _distinct      (for ALL 8 fields)
+ *   - license_info labels carry RAW source values: no trim, no normalization,
+ *     no type conversion. hardwareKey / installationNo / systemNo keep their
+ *     leading zeroes as STRING labels (0020697942, 000000000850791997) and
+ *     validFrom / validTo stay raw date strings (20231228, 99991231) — they
+ *     are NEVER converted to numbers or timestamps. Empty description stays
+ *     "" and remains visible.
+ *   - Presence semantics: "" is ABSENT, any non-empty raw string is PRESENT;
+ *     distinct counts distinct raw non-empty values; no trimming anywhere.
+ *   - Duplicate records are NOT collapsed: total_licenses counts every row and
+ *     every row emits its own license_info series at collector level (identical
+ *     full label sets collapse only at Prometheus exposition time — that is not
+ *     field loss).
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
+ */
+function collectSLICENSE(parsed, prefix) {
+  const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_slicense_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'SLICENSE');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'SLICENSE' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'SLICENSE' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
+  const licenses = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (licenses.length === 0) return results;
+
+  // ── Total licenses (MUST equal data.length, duplicates counted) ────
+  results.push({ fullName: `${prefix}_slicense_total_licenses`, value: licenses.length, labels: {} });
+
+  // Candidate keys per source field — exact camelCase field first, snake_case
+  // / uppercase fallbacks after (same pattern as the other T-Code collectors).
+  const F = {
+    PRODUCT: ['product', 'PRODUCT'],
+    DESCRIPTION: ['description', 'DESCRIPTION'],
+    HARDWARE_KEY: ['hardwareKey', 'hardware_key', 'HARDWAREKEY'],
+    INSTALLATION_NO: ['installationNo', 'installation_no', 'INSTALLATIONNO'],
+    SYSTEM_NO: ['systemNo', 'system_no', 'SYSTEMNO'],
+    VALID_FROM: ['validFrom', 'valid_from', 'VALIDFROM'],
+    VALID_TO: ['validTo', 'valid_to', 'VALIDTO'],
+    STATUS: ['status', 'STATUS'],
+  };
+  // snake_case label name per source field — 1:1, in source order.
+  const FIELD_NAMES = [
+    ['product', F.PRODUCT],
+    ['description', F.DESCRIPTION],
+    ['hardware_key', F.HARDWARE_KEY],
+    ['installation_no', F.INSTALLATION_NO],
+    ['system_no', F.SYSTEM_NO],
+    ['valid_from', F.VALID_FROM],
+    ['valid_to', F.VALID_TO],
+    ['status', F.STATUS],
+  ];
+
+  // ── Raw label value helpers (NO trim, NO normalization) ────────────
+  // license_info / count labels carry the exact source bytes. Only absent
+  // (undefined/null) values become ''. The 128-char cap follows the
+  // existing labelVal/rowFieldVal convention.
+  const rawVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw);
+    }
+    return '';
+  };
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+
+  // Presence = records whose RAW value stringifies to a non-empty string
+  // (no trim: a whitespace-only value still counts as present). Empty
+  // strings are absent here but stay observable on the license_info series.
+  const presentCount = (fields) => countWhere(licenses, (r) => rawVal(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of licenses) {
+      const v = rawVal(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  // ── Per-field count metrics (occurrences in source records) ────────
+  // Counted on the raw non-empty stringified value — duplicate records count
+  // all occurrences, identical values are grouped. Empty strings never become
+  // blank-label series. Label value capped at 128 chars (labelVal convention).
+  for (const [name, fields] of FIELD_NAMES) {
+    const counts = new Map();
+    for (const r of licenses) {
+      const v = rawVal(r, fields);
+      if (v === '') continue;
+      const key = v.substring(0, 128);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    for (const [value, cnt] of counts)
+      results.push({ fullName: `${prefix}_slicense_${name}_count`, value: cnt, labels: { [name]: value } });
+  }
+
+  // ── Per-record license_info — every field preserved, one series per record ──
+  // Duplicate records each emit their own series (no deduplication). All 8
+  // source fields become snake_case labels carrying the RAW value — empty
+  // description stays "", identifiers keep leading zeroes, dates stay raw
+  // strings.
+  for (const r of licenses) {
+    results.push({
+      fullName: `${prefix}_slicense_license_info`,
+      value: 1,
+      labels: {
+        product: infoVal(r, F.PRODUCT),
+        description: infoVal(r, F.DESCRIPTION),
+        hardware_key: infoVal(r, F.HARDWARE_KEY),
+        installation_no: infoVal(r, F.INSTALLATION_NO),
+        system_no: infoVal(r, F.SYSTEM_NO),
+        valid_from: infoVal(r, F.VALID_FROM),
+        valid_to: infoVal(r, F.VALID_TO),
+        status: infoVal(r, F.STATUS),
+      },
+    });
+  }
+
+  // ── Presence + distinct for ALL 8 fields ───────────────────────────
+  for (const [name, fields] of FIELD_NAMES) {
+    results.push({ fullName: `${prefix}_slicense_${name}_present`, value: presentCount(fields), labels: {} });
+    results.push({ fullName: `${prefix}_slicense_${name}_distinct`, value: distinctCount(fields), labels: {} });
+  }
+
+  return results;
+}
+
+/**
+ * RZ20 — CCMS Alert Monitor (Alerts)
+ * ==================================
+ * Source structure (from the real S3 payload):
+ *   top-level: monitor_type
+ *   each data[] record (13 fields — all represented below):
+ *     alsysid     — system ID (e.g. JCI)            → system_count{system}
+ *     msegname    — monitor segment name            → msegname_count{msegname}
+ *     alertdate   — alert date YYYYMMDD             → latest_alert_date
+ *     alerttime   — alert time HHMMSS               → latest_alert_time
+ *     alseverity  — alert severity (numeric)        → severity_count{severity},
+ *                                                     severity_total, severity_max
+ *     objectname  — alert object                    → object_count{object}
+ *     shortname   — alert short name                → shortname_count{shortname}
+ *     alstatus    — alert status (numeric)          → status_count{status}
+ *     statchgdat  — status-change date (empty here) → status_change_date_present,
+ *                                                     latest_status_change_date
+ *     statchgtim  — status-change time              → latest_status_change_time
+ *     statchgusr  — status-change user (empty here) → status_change_user_count{user},
+ *                                                     status_change_user_present,
+ *                                                     status_change_user_distinct
+ *     reportedby  — reporting component             → reported_by_count{reported_by}
+ *     msg         — free-text message               → message_present, message_distinct
+ *
+ * Design:
+ *   - alertdate / alerttime / statchgtim are never labels; the latest alert
+ *     is picked on the combined YYYYMMDDHHMMSS score so date and time always
+ *     come from the same record (never an invalid date+time combination).
+ *   - statchgdat is empty in the real payload — no fabricated date. The
+ *     populated statchgtim is preserved via the same max-fallback convention
+ *     used by SM12/ST22 when no row carries both date and time.
+ *   - msg is free text and effectively unique per alert → presence + distinct
+ *     scalar gauges only; NEVER used as a Prometheus label.
+ *   - No metric creates one series per alert (no per-record labels).
+ *
+ * The collector receives the full parsed object (not just the data rows) so
+ * the top-level monitor_type is observable too — same pattern as ST22/SM13.
+ */
+function collectRZ20(parsed, prefix) {
+  const results = [];
+
+  // ── Top-level monitor_type ─────────────────────────────────────────
+  // Scalar categorical at payload root. Emitted only when present so no
+  // blank-label series is created.
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+  if (monitorType !== '') {
+    results.push({ fullName: `${prefix}_rz20_monitor_type_count`, value: 1, labels: { monitor_type: monitorType } });
+  }
+
+  // ── Row extraction (same keys/fallback semantics as the generic path) ──
+  let rows = extractRows(parsed, 'RZ20');
+  if (rows === null) {
+    // No data-array wrapper found — treat the whole object as a single
+    // record (legacy flat-payload exporters).
+    logger.warn({ tcode: 'RZ20' }, 'No data array found in JSON — checking for single-record format');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      rows = [parsed];
+    } else {
+      return results;
+    }
+  }
+  if (rows.length === 0) {
+    logger.warn({ tcode: 'RZ20' }, 'Data array is empty — no metrics generated');
+    return results;
+  }
+
+  const alerts = rows.filter((r) => typeof r === 'object' && r !== null);
+  if (alerts.length === 0) return results;
+
+  // Candidate keys per source field — exact lower-case field first, legacy
+  // uppercase fallbacks after (same pattern as the other T-Code collectors).
+  const F = {
+    SYSID: ['alsysid', 'ALSYSID'],
+    MSEGNAME: ['msegname', 'MSEGNAME'],
+    ALERTDATE: ['alertdate', 'ALERTDATE'],
+    ALERTTIME: ['alerttime', 'ALERTTIME'],
+    SEVERITY: ['alseverity', 'ALSEVERITY'],
+    OBJECT: ['objectname', 'OBJECTNAME'],
+    SHORTNAME: ['shortname', 'SHORTNAME'],
+    STATUS: ['alstatus', 'ALSTATUS'],
+    STCHGDAT: ['statchgdat', 'STATCHGDAT'],
+    STCHGTIM: ['statchgtim', 'STATCHGTIM'],
+    STCHGUSR: ['statchgusr', 'STATCHGUSR'],
+    REPORTEDBY: ['reportedby', 'REPORTEDBY'],
+    MSG: ['msg', 'MSG'],
+  };
+
+  // ── Overall count ──────────────────────────────────────────────────
+  results.push({ fullName: `${prefix}_rz20_total_alerts`, value: alerts.length, labels: {} });
+
+  // ── Bounded categoricals → per-value count metrics with labels ─────
+  // freqMap skips empty values, so no blank-label series is emitted.
+  for (const [sys, cnt] of freqMap(alerts, F.SYSID))
+    results.push({ fullName: `${prefix}_rz20_system_count`, value: cnt, labels: { system: sys } });
+  for (const [mseg, cnt] of freqMap(alerts, F.MSEGNAME))
+    results.push({ fullName: `${prefix}_rz20_msegname_count`, value: cnt, labels: { msegname: mseg } });
+  for (const [sev, cnt] of freqMap(alerts, F.SEVERITY))
+    results.push({ fullName: `${prefix}_rz20_severity_count`, value: cnt, labels: { severity: sev } });
+  for (const [obj, cnt] of freqMap(alerts, F.OBJECT))
+    results.push({ fullName: `${prefix}_rz20_object_count`, value: cnt, labels: { object: obj } });
+  for (const [name, cnt] of freqMap(alerts, F.SHORTNAME))
+    results.push({ fullName: `${prefix}_rz20_shortname_count`, value: cnt, labels: { shortname: name } });
+  for (const [status, cnt] of freqMap(alerts, F.STATUS))
+    results.push({ fullName: `${prefix}_rz20_status_count`, value: cnt, labels: { status } });
+  for (const [reporter, cnt] of freqMap(alerts, F.REPORTEDBY))
+    results.push({ fullName: `${prefix}_rz20_reported_by_count`, value: cnt, labels: { reported_by: reporter } });
+
+  // ── alseverity — numeric aggregates (no labels) ────────────────────
+  results.push({ fullName: `${prefix}_rz20_severity_total`, value: sumField(alerts, F.SEVERITY), labels: {} });
+  let severityMax = null;
+  for (const r of alerts) {
+    const sev = numField(r, F.SEVERITY);
+    if (sev !== null && (severityMax === null || sev > severityMax)) severityMax = sev;
+  }
+  if (severityMax !== null) results.push({ fullName: `${prefix}_rz20_severity_max`, value: severityMax, labels: {} });
+
+  // ── alertdate / alerttime — latest alert as numeric gauges ────────
+  // Compared on the combined YYYYMMDDHHMMSS score so the newest date+time
+  // pair wins — never the biggest alerttime of an older day. Non-digit
+  // separators are stripped before comparing.
+  let bestDate = null;
+  let bestTime = null;
+  let bestScore = null;
+  for (const r of alerts) {
+    const d = digitsNumField(r, F.ALERTDATE);
+    const t = digitsNumField(r, F.ALERTTIME);
+    if (d === null || t === null) continue;
+    const score = d * 1000000 + t;
+    if (bestScore === null || score > bestScore) {
+      bestScore = score;
+      bestDate = d;
+      bestTime = t;
+    }
+  }
+  if (bestDate === null) {
+    // No row carried both date and time — fall back to the max of each.
+    for (const r of alerts) {
+      const d = digitsNumField(r, F.ALERTDATE);
+      if (d !== null && (bestDate === null || d > bestDate)) bestDate = d;
+      const t = digitsNumField(r, F.ALERTTIME);
+      if (t !== null && (bestTime === null || t > bestTime)) bestTime = t;
+    }
+  }
+  if (bestDate !== null) results.push({ fullName: `${prefix}_rz20_latest_alert_date`, value: bestDate, labels: {} });
+  if (bestTime !== null) results.push({ fullName: `${prefix}_rz20_latest_alert_time`, value: bestTime, labels: {} });
+
+  // ── statchgdat / statchgtim — latest status-change timestamp ───────
+  // statchgdat is empty in the real payload — no fabricated date. When no
+  // row carries both date and time the populated statchgtim is preserved
+  // as the max (same fallback convention as SM12/ST22).
+  let bestChgDate = null;
+  let bestChgTime = null;
+  let bestChgScore = null;
+  for (const r of alerts) {
+    const d = digitsNumField(r, F.STCHGDAT);
+    const t = digitsNumField(r, F.STCHGTIM);
+    if (d === null || t === null) continue;
+    const score = d * 1000000 + t;
+    if (bestChgScore === null || score > bestChgScore) {
+      bestChgScore = score;
+      bestChgDate = d;
+      bestChgTime = t;
+    }
+  }
+  if (bestChgDate === null) {
+    // No row carried both date and time — fall back to the max of each.
+    for (const r of alerts) {
+      const d = digitsNumField(r, F.STCHGDAT);
+      if (d !== null && (bestChgDate === null || d > bestChgDate)) bestChgDate = d;
+      const t = digitsNumField(r, F.STCHGTIM);
+      if (t !== null && (bestChgTime === null || t > bestChgTime)) bestChgTime = t;
+    }
+  }
+  if (bestChgDate !== null) results.push({ fullName: `${prefix}_rz20_latest_status_change_date`, value: bestChgDate, labels: {} });
+  if (bestChgTime !== null) results.push({ fullName: `${prefix}_rz20_latest_status_change_time`, value: bestChgTime, labels: {} });
+
+  // ── statchgdat / statchgusr / msg — presence + distinct scalars ────
+  // statchgdat and statchgusr are empty in the real payload → presence
+  // gauges keep them observable without emitting blank-label series.
+  // msg is free text and effectively unique per alert → NEVER a label.
+  const presentCount = (fields) => countWhere(alerts, (r) => strField(r, fields) !== '');
+  const distinctCount = (fields) => {
+    const seen = new Set();
+    for (const r of alerts) {
+      const v = strField(r, fields);
+      if (v !== '') seen.add(v);
+    }
+    return seen.size;
+  };
+
+  results.push({ fullName: `${prefix}_rz20_status_change_date_present`, value: presentCount(F.STCHGDAT), labels: {} });
+  results.push({ fullName: `${prefix}_rz20_status_change_user_present`, value: presentCount(F.STCHGUSR), labels: {} });
+  results.push({ fullName: `${prefix}_rz20_status_change_user_distinct`, value: distinctCount(F.STCHGUSR), labels: {} });
+  results.push({ fullName: `${prefix}_rz20_message_present`, value: presentCount(F.MSG), labels: {} });
+  results.push({ fullName: `${prefix}_rz20_message_distinct`, value: distinctCount(F.MSG), labels: {} });
+
+  // ── statchgusr — per-value count (bounded categorical) ─────────────
+  // Emitted only when at least one record carries a non-empty value —
+  // freqMap skips empty values, so no blank `user` label series exists.
+  for (const [user, cnt] of freqMap(alerts, F.STCHGUSR))
+    results.push({ fullName: `${prefix}_rz20_status_change_user_count`, value: cnt, labels: { user } });
+
+  return results;
+}
+
 // ── T-Code Collector Registry ────────────────────────────────────────────
 
 const COLLECTOR_MAP = {
@@ -1126,9 +3750,12 @@ const COLLECTOR_MAP = {
   SM21: collectSM21,
   SM37: collectSM37,
   SP01: collectSP01,
+  SP12: collectSP12,
   ST02: collectST02,
   ST03N: collectST03N,
+  SLICENSE: collectSLICENSE,
   STRUST: collectSTRUST,
+  RZ20: collectRZ20,
 };
 
 // ── Parser Entry Point ───────────────────────────────────────────────────
@@ -1145,6 +3772,66 @@ function parseToMetrics(jsonString, tcode, metricsPrefix) {
       if (tcodeKey === 'ST06') {
         const st06Metrics = collectST06(parsed, metricsPrefix);
         rawMetrics.push(...st06Metrics);
+      } else if (tcodeKey === 'ST22') {
+        // ST22 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const st22Metrics = collectST22(parsed, metricsPrefix);
+        rawMetrics.push(...st22Metrics);
+      } else if (tcodeKey === 'SM13') {
+        // SM13 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sm13Metrics = collectSM13(parsed, metricsPrefix);
+        rawMetrics.push(...sm13Metrics);
+      } else if (tcodeKey === 'SP12') {
+        // SP12 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sp12Metrics = collectSP12(parsed, metricsPrefix);
+        rawMetrics.push(...sp12Metrics);
+      } else if (tcodeKey === 'SP01') {
+        // SP01 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sp01Metrics = collectSP01(parsed, metricsPrefix);
+        rawMetrics.push(...sp01Metrics);
+      } else if (tcodeKey === 'RZ20') {
+        // RZ20 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const rz20Metrics = collectRZ20(parsed, metricsPrefix);
+        rawMetrics.push(...rz20Metrics);
+      } else if (tcodeKey === 'SM37') {
+        // SM37 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sm37Metrics = collectSM37(parsed, metricsPrefix);
+        rawMetrics.push(...sm37Metrics);
+      } else if (tcodeKey === 'AL08') {
+        // AL08 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const al08Metrics = collectAL08(parsed, metricsPrefix);
+        rawMetrics.push(...al08Metrics);
+      } else if (tcodeKey === 'STRUST') {
+        // STRUST needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const strustMetrics = collectSTRUST(parsed, metricsPrefix);
+        rawMetrics.push(...strustMetrics);
+      } else if (tcodeKey === 'SLICENSE') {
+        // SLICENSE needs the full parsed object (top-level monitor_type) plus
+        // the data rows — the collector handles row extraction itself.
+        const slicenseMetrics = collectSLICENSE(parsed, metricsPrefix);
+        rawMetrics.push(...slicenseMetrics);
+      } else if (tcodeKey === 'SM21') {
+        // SM21 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sm21Metrics = collectSM21(parsed, metricsPrefix);
+        rawMetrics.push(...sm21Metrics);
+      } else if (tcodeKey === 'SM20') {
+        // SM20 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sm20Metrics = collectSM20(parsed, metricsPrefix);
+        rawMetrics.push(...sm20Metrics);
+      } else if (tcodeKey === 'SM50') {
+        // SM50 needs the full parsed object (top-level monitor_type) plus the
+        // data rows — the collector handles row extraction itself.
+        const sm50Metrics = collectSM50(parsed, metricsPrefix);
+        rawMetrics.push(...sm50Metrics);
       } else {
         const rows = extractRows(parsed, tcodeKey);
         if (rows === null) {
@@ -1195,7 +3882,10 @@ module.exports = {
   collectSM21,
   collectSM37,
   collectSP01,
+  collectSP12,
   collectST02,
   collectST03N,
+  collectSLICENSE,
   collectSTRUST,
+  collectRZ20,
 };

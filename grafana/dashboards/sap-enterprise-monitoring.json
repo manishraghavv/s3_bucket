@@ -120,44 +120,33 @@
       "targets": [{ "expr": "sap_al08_total_sessions", "legendFormat": "Sessions", "refId": "A" }]
     },
     {
-      "id": 13, "title": "GUI Users", "type": "stat",
-      "gridPos": { "h": 3, "w": 4, "x": 8, "y": 5 },
-      "description": "Users connected via SAP GUI (type A)",
+      "id": 13, "title": "Session Types", "type": "stat",
+      "gridPos": { "h": 3, "w": 8, "x": 8, "y": 5 },
+      "description": "Active sessions grouped by raw session TYPE code (e.g. 2, 4, 32 — no semantic mapping)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
       "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 100 }] }, "color": { "mode": "thresholds" } } },
-      "targets": [{ "expr": "sap_al08_gui_users", "legendFormat": "GUI", "refId": "A" }]
+      "targets": [{ "expr": "sap_al08_type_count", "legendFormat": "{{type}}", "refId": "A" }]
     },
     {
-      "id": 14, "title": "Background Users", "type": "stat",
-      "gridPos": { "h": 3, "w": 4, "x": 12, "y": 5 },
-      "description": "Background processing users (type B)",
+      "id": 14, "title": "Sessions by Status", "type": "stat",
+      "gridPos": { "h": 3, "w": 8, "x": 16, "y": 5 },
+      "description": "Active sessions grouped by raw session STATUS code",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
       "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 10 }, { "color": "red", "value": 40 }] }, "color": { "mode": "thresholds" } } },
-      "targets": [{ "expr": "sap_al08_background_users", "legendFormat": "Background", "refId": "A" }]
+      "targets": [{ "expr": "sap_al08_status_count", "legendFormat": "{{stat}}", "refId": "A" }]
     },
     {
-      "id": 15, "title": "RFC Users", "type": "stat",
-      "gridPos": { "h": 3, "w": 4, "x": 16, "y": 5 },
-      "description": "RFC-connected users (type C)",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto" },
-      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "green", "value": 0 }, { "color": "yellow", "value": 20 }, { "color": "red", "value": 80 }] }, "color": { "mode": "thresholds" } } },
-      "targets": [{ "expr": "sap_al08_rfc_users", "legendFormat": "RFC", "refId": "A" }]
-    },
-    {
-      "id": 16, "title": "User Trend", "type": "timeseries",
+      "id": 16, "title": "Session Types Trend", "type": "timeseries",
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
-      "description": "Logged-on users over time by session type",
+      "description": "Active sessions over time by raw session TYPE code",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean","max","min"] }, "tooltip": { "mode": "multi" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "lineInterpolation": "smooth", "fillOpacity": 15, "pointSize": 2 } } },
       "targets": [
-        { "expr": "sap_al08_gui_users", "legendFormat": "GUI Users", "refId": "A" },
-        { "expr": "sap_al08_background_users", "legendFormat": "Background", "refId": "B" },
-        { "expr": "sap_al08_rfc_users", "legendFormat": "RFC Users", "refId": "C" },
-        { "expr": "sap_al08_total_sessions", "legendFormat": "Total Sessions", "refId": "D" }
+        { "expr": "sap_al08_type_count", "legendFormat": "Type {{type}}", "refId": "A" },
+        { "expr": "sap_al08_total_sessions", "legendFormat": "Total Sessions", "refId": "B" }
       ]
     },
     {
@@ -199,19 +188,36 @@
     {
       "id": 21, "title": "Logged User Table", "type": "table",
       "gridPos": { "h": 7, "w": 8, "x": 16, "y": 15 },
-      "description": "Users with their session counts per terminal",
+      "description": "Sessions per logged-on AL08 user (sap_al08_user_count — empty user label filtered out)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": { "footer": { "show": false }, "frameIndex": 0, "showTypeIcons": false },
       "transformations": [
-        { "id": "seriesToRows", "options": {} }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "exporter": true,
+              "version": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            },
+            "indexByName": {
+              "user": 0,
+              "Value": 1
+            },
+            "renameByName": {
+              "user": "User ID",
+              "Value": "Sessions"
+            }
+          }
+        }
       ],
-      "targets": [{ "expr": "topk(20, sap_al08_user_count)", "legendFormat": "{{user}}", "refId": "A" }],
+      "targets": [{ "expr": "sap_al08_user_count{user!=\"\"}", "legendFormat": "__auto", "refId": "A", "format": "table", "instant": true }],
       "fieldConfig": {
         "defaults": { "custom": { "align": "left", "displayMode": "auto" } },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Value #A" }, "properties": [{ "id": "displayName", "value": "Sessions" }] },
-          { "matcher": { "id": "byName", "options": "user" }, "properties": [{ "id": "displayName", "value": "User ID" }] }
-        ]
+        "overrides": []
       }
     },
 

@@ -163,28 +163,50 @@ curl http://localhost:9090/api/v1/targets
 |--------|--------|-------------|
 | `sap_al08_logged_users` | — | Unique logged-on users |
 | `sap_al08_total_sessions` | — | Total active sessions |
-| `sap_al08_gui_users` | — | GUI users (type A) |
-| `sap_al08_background_users` | — | Background users (type B) |
-| `sap_al08_rfc_users` | — | RFC users (type C) |
-| `sap_al08_client_count` | `client` | Users per client |
-| `sap_al08_tcode_count` | `tcode` | Users per transaction |
+| `sap_al08_client_count` | `client` | Sessions per client |
+| `sap_al08_tcode_count` | `tcode` | Sessions per transaction |
 | `sap_al08_user_count` | `user` | Sessions per user |
 | `sap_al08_terminal_count` | `terminal` | Sessions per terminal |
-| `sap_al08_host_count` | `host` | Sessions per host |
+| `sap_al08_host_count` | `host` | Sessions per host (SERVER_NAME) |
+| `sap_al08_type_count` | `type` | Sessions per raw TYPE code (e.g. 2, 4, 32) |
+| `sap_al08_status_count` | `stat` | Sessions per raw STATUS code |
+| `sap_al08_session_info` | `session_id`, `client`, `userid`, `tcode`, `terminal`, `time`, `session`, `type`, `stat`, `server_name` | One series per logged-on session — complete AL08 row with raw source values |
 
 ### SM12 — Lock Entries
 
 | Metric | Labels | Description |
 |--------|--------|-------------|
 | `sap_sm12_total_locks` | — | Total lock entries |
-| `sap_sm12_unique_users` | — | Unique users holding locks |
-| `sap_sm12_locked_tables` | — | Unique locked tables |
-| `sap_sm12_exclusive_locks` | — | Exclusive locks (E/X) |
-| `sap_sm12_shared_locks` | — | Shared locks (S) |
+| `sap_sm12_unique_users` | — | Unique lock owners (GUNAME) |
+| `sap_sm12_locked_tables` | — | Unique locked tables (TABLE) |
+| `sap_sm12_exclusive_locks` | — | Exclusive locks (GMODE E/X) |
+| `sap_sm12_shared_locks` | — | Shared locks (GMODE S) |
+| `sap_sm12_other_locks` | — | Locks in other/unclassified GMODE (e.g. O) |
 | `sap_sm12_table_count` | `table` | Locks per table |
-| `sap_sm12_user_count` | `user` | Locks per user |
+| `sap_sm12_user_count` | `user` | Locks per owner user (GUNAME) |
 | `sap_sm12_lock_mode_count` | `lock_mode` | Locks per mode |
-| `sap_sm12_client_count` | `client` | Locks per client |
+| `sap_sm12_client_count` | `client` | Locks per client (GCLIENT) |
+| `sap_sm12_object_count` | `object` | Locks per lock object (GOBJ) |
+| `sap_sm12_host_count` | `host` | Locks per host (GTHOST) |
+| `sap_sm12_guse_total` | — | Sum of GUSE numeric column |
+| `sap_sm12_gusevb_total` | — | Sum of GUSEVB numeric column |
+| `sap_sm12_gtwp_total` | — | Sum of GTWP numeric column |
+| `sap_sm12_gtwp_max` | — | Max GTWP value across lock entries |
+| `sap_sm12_gtsysnr_total` | — | Sum of GTSYSNR numeric column |
+| `sap_sm12_latest_date` | — | Newest GTDATE as numeric YYYYMMDD |
+| `sap_sm12_latest_time` | — | Newest GTTIME as numeric HHMMSS |
+| `sap_sm12_lock_arg_present` | — | Lock entries with non-empty LOCK_ARG |
+| `sap_sm12_lock_arg_distinct` | — | Distinct non-empty LOCK_ARG values |
+| `sap_sm12_user_id_present` | — | Lock entries with non-empty USER_ID |
+| `sap_sm12_gusr_present` | — | Lock entries with non-empty GUSR |
+| `sap_sm12_gusrvb_present` | — | Lock entries with non-empty GUSRVB |
+| `sap_sm12_gusrvb_distinct` | — | Distinct non-empty GUSRVB values |
+| `sap_sm12_gtmark_present` | — | Lock entries with non-empty GTMARK |
+
+LOCK_ARG / GUSRVB are free-form strings that are effectively unique per lock;
+they are counted (presence / distinct) but never used as Prometheus labels.
+USER_ID / GUSR / GTMARK are empty in the real payload and are exposed via
+presence gauges so no blank-label series is created.
 
 ### SM50 — Work Processes
 
@@ -206,6 +228,85 @@ curl http://localhost:9090/api/v1/targets
 | `sap_sm50_user_count` | `user` | WPs per user |
 | `sap_sm50_client_count` | `client` | WPs per client |
 
+### SM13 — Update Requests
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_sm13_total_updates` | — | Total update requests |
+| `sap_sm13_pending_updates` | — | Pending update requests |
+| `sap_sm13_error_updates` | — | Error update requests |
+| `sap_sm13_finished_updates` | — | Finished update requests |
+| `sap_sm13_unknown_updates` | — | Update requests with unknown state |
+| `sap_sm13_update_state` | `user`, `tcode`, `function` | State code per update request |
+| `sap_sm13_update_age_seconds` | `user`, `tcode`, `function` | Age of update request (seconds) |
+| `sap_sm13_update_state_count` | `state` | Update requests per state |
+| `sap_sm13_user_count` | `user` | Update requests per user |
+| `sap_sm13_tcode_count` | `tcode` | Update requests per transaction code |
+| `sap_sm13_function_count` | `update_function` | Update requests per function module |
+| `sap_sm13_monitor_type_count` | `monitor_type` | Payload monitor type (top-level) |
+| `sap_sm13_vbkey_present` | — | Records with a vbkey |
+| `sap_sm13_vbkey_distinct` | — | Distinct vbkey values (unique request keys) |
+| `sap_sm13_latest_date` | — | Latest update timestamp (YYYYMMDDHHMMSS) |
+| `sap_sm13_vbtimoff_total` | — | Sum of vbtimoff values |
+| `sap_sm13_vbtimoff_max` | — | Max vbtimoff value |
+| `sap_sm13_vbtimoff_min` | — | Min vbtimoff value |
+| `sap_sm13_vbrc_total` | — | Sum of vbrc values |
+| `sap_sm13_vbrc_max` | — | Max vbrc value |
+| `sap_sm13_report_count` | `report` | Update requests per report |
+| `sap_sm13_status_count` | `status` | Update requests per status text |
+| `sap_sm13_error_class_count` | `error_class` | Update requests per error class |
+| `sap_sm13_error_number_count` | `error_number` | Update requests per error number |
+| `sap_sm13_error_text_present` | — | Records with non-empty errorText |
+| `sap_sm13_error_text_distinct` | — | Distinct non-empty errorText values |
+
+### SP01 — Spool Request Overview
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_sp01_total_requests` | — | Total spool requests |
+| `sap_sp01_waiting_requests` | — | Waiting/pending requests |
+| `sap_sp01_error_requests` | — | Requests with errors |
+| `sap_sp01_completed_requests` | — | Completed requests |
+| `sap_sp01_request_count` | `state` | Requests per final state |
+| `sap_sp01_active_printers` | — | Active printer destinations |
+| `sap_sp01_printer_request_count` | `printer` | Requests per printer |
+| `sap_sp01_printer_utilization` | `printer` | Printer utilization % |
+| `sap_sp01_unique_owners` | — | Unique request owners |
+| `sap_sp01_owner_request_count` | `owner` | Requests per owner |
+| `sap_sp01_request_info` | `rqident`, `rqowner`, `rqdest`, `rqcretime`, `rqfinal`, `rqerror` | Per-request detail (kept for Grafana panel 1214) |
+| `sap_sp01_monitor_type_count` | `monitor_type` | Payload monitor type (top-level) |
+| `sap_sp01_request_id_present` | — | Records with an RQIDENT |
+| `sap_sp01_request_id_distinct` | — | Distinct RQIDENT values (no label — high cardinality) |
+| `sap_sp01_owner_count` | `owner` | Requests per owner (RQOWNER) |
+| `sap_sp01_title_present` | — | Records with non-empty RQTITLE |
+| `sap_sp01_title_distinct` | — | Distinct non-empty RQTITLE values |
+| `sap_sp01_destination_count` | `destination` | Requests per destination (RQDEST) |
+| `sap_sp01_creation_date_present` | — | Records with non-empty RQCDATE |
+| `sap_sp01_creation_date_distinct` | — | Distinct non-empty RQCDATE values |
+| `sap_sp01_latest_creation_date` | — | Latest creation date (YYYYMMDD) |
+| `sap_sp01_latest_creation_time` | — | Latest creation time (HHMMSS) |
+| `sap_sp01_final_status_count` | `final_status` | Requests per RQFINAL value |
+| `sap_sp01_error_total` | — | Sum of RQERROR values |
+| `sap_sp01_error_count` | `error` | Requests per RQERROR value |
+| `sap_sp01_rq1name_present` | — | Records with non-empty RQ1NAME |
+| `sap_sp01_rq1name_distinct` | — | Distinct non-empty RQ1NAME values |
+
+### SP12 — TemSe Data Administration
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `sap_sp12_monitor_type_count` | `monitor_type` | Payload monitor type (top-level) |
+| `sap_sp12_line_count` | — | Total output lines (incl. empty) |
+| `sap_sp12_line_present` | — | Non-empty output lines |
+| `sap_sp12_line_distinct` | — | Distinct non-empty line texts |
+| `sap_sp12_check_type_present` | — | Check-type header line present (TemSe:) |
+| `sap_sp12_check_description_present` | — | Check description line present |
+| `sap_sp12_latest_check_date` | — | Latest check date (YYYYMMDD) |
+| `sap_sp12_latest_check_time` | — | Latest check time (HHMMSS) |
+| `sap_sp12_no_data` | — | "No Data" box present (1) / absent (0) |
+| `sap_sp12_temse_objects_checked` | — | TemSe objects checked count |
+| `sap_sp12_tst01_status` | — | TST01 check status (OK = 1) |
+
 ### ST22 — ABAP Runtime Errors
 
 | Metric | Labels | Description |
@@ -219,6 +320,21 @@ curl http://localhost:9090/api/v1/targets
 | `sap_st22_host_count` | `host` | Dumps per host |
 | `sap_st22_client_count` | `client` | Dumps per client |
 | `sap_st22_error_code_count` | `error_code` | Dumps per error code |
+| `sap_st22_monitor_type_count` | `monitor_type` | Payload monitor type (top-level) |
+| `sap_st22_latest_date` | — | Latest dump date (YYYYMMDD) |
+| `sap_st22_latest_time` | — | Latest dump time (HHMMSS) |
+| `sap_st22_dump_id_count` | `dump_id` | Dumps per dump ID |
+| `sap_st22_includename_count` | `includename` | Dumps per include name |
+| `sap_st22_line_number_total` | — | Sum of linenumber values |
+| `sap_st22_line_number_max` | — | Max linenumber value |
+| `sap_st22_error_analysis_present` | — | Records with non-empty errorAnalysis |
+| `sap_st22_error_analysis_distinct` | — | Distinct non-empty errorAnalysis values |
+| `sap_st22_short_text_present` | — | Records with non-empty shortText |
+| `sap_st22_short_text_distinct` | — | Distinct non-empty shortText values |
+| `sap_st22_include_count` | `include` | Dumps per include |
+| `sap_st22_line_no_total` | — | Sum of lineno values |
+| `sap_st22_line_no_max` | — | Max lineno value |
+| `sap_st22_program_field_count` | `program_field` | Dumps per program field |
 
 ### ST06 — System Performance
 
@@ -291,10 +407,13 @@ Each T-Code uses its own field naming convention. The exporter supports:
 
 | T-Code | Key Fields |
 |--------|------------|
-| AL08   | `CLIENT`, `USERID`, `TCODE`, `TERMINAL`, `TIME`, `HOSTADR`, `TYPE` |
-| SM12   | `TABLE`, `LOCK_ARG`, `USER_ID`, `GMOD`, `GCLIENT` |
+| AL08   | `SESSION_ID`, `CLIENT`, `USERID`, `TCODE`, `TERMINAL`, `TIME`, `SESSION`, `TYPE`, `STAT`, `SERVER_NAME` |
+| SM12   | `TABLE`, `LOCK_ARG`, `USER_ID`, `GMODE`, `GUSR`, `GUSRVB`, `GUSE`, `GUSEVB`, `GOBJ`, `GCLIENT`, `GUNAME`, `GTHOST`, `GTWP`, `GTSYSNR`, `GTDATE`, `GTTIME`, `GTMARK` |
 | SM50   | `WP_TYP`, `WP_STATUS`, `WP_BNAME`, `WP_CPU`, `WP_CLIENT`, `WP_NO`, `WP_REPORT` |
-| ST22   | `dumpid`, `programname`, `syuser`, `syhost`, `sydate`, `syclient`, `sycode`, `errtext` |
+| SM13   | top-level `monitor_type`; per record `vbkey`, `vbusr`, `vbdate`, `vbtimoff`, `vbstate`, `vbrc`, `vbtcode`, `vbreport`, `vbfunc`, `status`, `errorClass`, `errorNumber`, `errorText` |
+| SP12   | top-level `monitor_type`; per record `line` (TemSe check report output line) |
+| SP01   | top-level `monitor_type`; per record `RQIDENT`, `RQOWNER`, `RQTITLE`, `RQDEST`, `RQCDATE`, `RQCRETIME`, `RQFINAL`, `RQERROR`, `RQ1NAME` |
+| ST22   | top-level `monitor_type`; per record `sydate`, `sytime`, `syhost`, `syuser`, `dumpid`, `programname`, `includename`, `linenumber`, `errorAnalysis`, `shortText`, `include`, `lineno`, `program` |
 | ST06   | `cpu.{n}.user/system/idle/wait`, `memory.*`, `swap.*`, `disk.*`, `paging.*`, `network.*` |
 
 The exporter also provides uppercase fallbacks for all fields.

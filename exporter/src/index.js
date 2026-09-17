@@ -73,7 +73,16 @@ let lastScrapeTotalMetrics = 0;
 let lastScrapeTimestamp = Date.now();
 let lastJsonKey = '';
 let lastJsonTcode = '';
+let lastJsonFileTimestamp = null;
 let lastJsonAgeSeconds = 0;
+
+// ── S3 In-Memory Cache State ───────────────────────────────────────────
+let lastCacheTimestamp = 0;
+let hasCachedData = false;
+let activeRefreshPromise = null;
+
+// Cache parsed metrics per T-Code: tcode -> { key, lastModifiedTime, metrics }
+const tcodeCache = new Map();
 
 // ── Health endpoint ─────────────────────────────────────────────────────
 //
@@ -99,6 +108,12 @@ app.get(config.server.healthPath, (_req, res) => {
     checks,
     timestamp: new Date().toISOString(),
     uptime: Math.floor(process.uptime()),
+    cache: {
+      hasCachedData,
+      cacheTtlSeconds: config.s3.cacheTtlSeconds,
+      lastRefreshTimestamp: lastCacheTimestamp ? new Date(lastCacheTimestamp).toISOString() : null,
+      ageSeconds: lastCacheTimestamp ? Math.floor((Date.now() - lastCacheTimestamp) / 1000) : null,
+    },
     lastScrape: {
       durationMs: lastScrapeDuration,
       tcodesFound: lastScrapeTotalTcodes,
@@ -113,23 +128,26 @@ app.get(config.server.healthPath, (_req, res) => {
   res.status(healthy ? 200 : 503).json(body);
 });
 
-// ── Metrics endpoint ────────────────────────────────────────────────────
+// ── S3 Refresh & Parsing Core ──────────────────────────────────────────
 
-app.get(config.server.metricsPath, async (_req, res) => {
+/**
+ * Execute a complete S3 list, file selection, download, and metrics parsing cycle.
+ * Atomically updates Prometheus metrics upon success.
+ */
+async function doRefreshS3Data() {
   const startTime = Date.now();
+  logger.info('━━━ S3 Cache refresh cycle started ━━━');
 
   try {
     // ═══════════════════════════════════════════════════════════════════
     // STAGE 1 — List all objects from S3 bucket
     // ═══════════════════════════════════════════════════════════════════
-    logger.info('━━━ Scrape cycle started ━━━');
     const objects = await s3.listObjects();
     logger.info({ totalObjects: objects.length }, 'S3 listObjects complete');
 
     if (objects.length === 0) {
       logger.warn('No objects found in S3 bucket');
-      res.set('Content-Type', getRegistry().contentType);
-      res.end(await getRegistry().metrics());
+      lastCacheTimestamp = Date.now();
       return;
     }
 
@@ -140,12 +158,10 @@ app.get(config.server.metricsPath, async (_req, res) => {
 
     if (latestFiles.size === 0) {
       logger.warn('No matching JSON files found in S3 bucket');
-      res.set('Content-Type', getRegistry().contentType);
-      res.end(await getRegistry().metrics());
+      lastCacheTimestamp = Date.now();
       return;
     }
 
-    // Log every T-Code that was resolved
     const tcodeEntries = Array.from(latestFiles.entries());
     for (const [tcode, info] of tcodeEntries) {
       logger.info(
@@ -154,30 +170,33 @@ app.get(config.server.metricsPath, async (_req, res) => {
       );
     }
 
-    // Log skipped objects (non-JSON or unrecognised filename pattern)
-    const matchedCount = tcodeEntries.reduce((sum, [, info]) => sum + 1, 0);
+    const matchedCount = tcodeEntries.length;
     const skippedCount = objects.length - matchedCount;
     if (skippedCount > 0) {
       logger.warn({ skippedCount, totalObjects: objects.length }, 'Objects skipped (non-JSON or unrecognised T-Code pattern)');
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // STAGE 3 — Reset Prometheus gauges from previous scrape
-    // ═══════════════════════════════════════════════════════════════════
-    logger.info('Resetting all gauges from previous scrape');
-    resetAllGauges();
-
-    // ═══════════════════════════════════════════════════════════════════
-    // STAGE 4 — Download & parse latest file for EVERY T-Code
+    // STAGE 3 & 4 — Download & parse latest file for EVERY T-Code
     // ═══════════════════════════════════════════════════════════════════
     let successCount = 0;
     let errorCount = 0;
     /** @type {Array<{ fullName: string, value: number, labels?: Record<string,string> }>} */
     const allMetrics = [];
-
     const downloadPromises = [];
 
     for (const [tcode, fileInfo] of latestFiles) {
+      const cached = tcodeCache.get(tcode);
+      const fileModifiedTime = fileInfo.lastModified?.getTime() || 0;
+
+      // Avoid re-downloading identical JSON file if key and LastModified have not changed
+      if (cached && cached.key === fileInfo.key && cached.lastModifiedTime === fileModifiedTime) {
+        logger.debug({ tcode, key: fileInfo.key }, 'File unchanged → reusing parsed metrics (skipped S3 GetObject)');
+        allMetrics.push(...cached.metrics);
+        successCount++;
+        continue;
+      }
+
       downloadPromises.push(
         (async () => {
           try {
@@ -192,18 +211,34 @@ app.get(config.server.metricsPath, async (_req, res) => {
             if (parseError) {
               logger.error({ tcode, key: fileInfo.key, err: parseError }, 'Parse FAILED → skipped');
               errorCount++;
+              // Cache unparseable result so the same invalid file isn't repeatedly re-downloaded
+              tcodeCache.set(tcode, {
+                key: fileInfo.key,
+                lastModifiedTime: fileModifiedTime,
+                metrics: [],
+              });
               return;
             }
 
             if (metrics.length === 0) {
               logger.warn({ tcode, key: fileInfo.key }, 'Parsed OK but zero numeric metrics found → skipped');
               errorCount++;
+              // Cache zero-metric result (e.g. ST03N) so unchanged file is not re-downloaded every refresh
+              tcodeCache.set(tcode, {
+                key: fileInfo.key,
+                lastModifiedTime: fileModifiedTime,
+                metrics: [],
+              });
               return;
             }
 
-            // ── Collect into combined batch ─────────────────────
-            // DO NOT call updateMetrics() here — collect all T-Code
-            // metrics first, THEN register once (below).
+            // Cache successfully parsed metrics for this T-Code
+            tcodeCache.set(tcode, {
+              key: fileInfo.key,
+              lastModifiedTime: fileModifiedTime,
+              metrics,
+            });
+
             allMetrics.push(...metrics);
             successCount++;
 
@@ -215,6 +250,11 @@ app.get(config.server.metricsPath, async (_req, res) => {
           } catch (err) {
             logger.error({ err, tcode, key: fileInfo.key }, 'Download/parse FAILED');
             errorCount++;
+            // If download failed but older cached metrics exist for this T-Code, keep them
+            if (cached) {
+              allMetrics.push(...cached.metrics);
+              successCount++;
+            }
           }
         })(),
       );
@@ -222,9 +262,18 @@ app.get(config.server.metricsPath, async (_req, res) => {
 
     await Promise.all(downloadPromises);
 
-    // ── Register ALL SAP metrics in a single updateMetrics() call ──
+    // Clean up tcodeCache for T-Codes no longer present in latestFiles
+    for (const cachedTcode of tcodeCache.keys()) {
+      if (!latestFiles.has(cachedTcode)) {
+        tcodeCache.delete(cachedTcode);
+      }
+    }
+
+    // ── Atomically register SAP metrics in Prometheus registry ──
     if (allMetrics.length > 0) {
+      resetAllGauges();
       updateMetrics(allMetrics);
+      hasCachedData = true;
     }
 
     // ── Update exporter stats for health endpoint and Prometheus ──
@@ -235,29 +284,18 @@ app.get(config.server.metricsPath, async (_req, res) => {
     lastScrapeTotalTcodes = latestFiles.size;
     lastScrapeTotalMetrics = allMetrics.length;
     lastScrapeTimestamp = Date.now();
+    lastCacheTimestamp = Date.now();
 
     // Track latest file info from the last tcode in the list
     if (tcodeEntries.length > 0) {
       const [tcode, info] = tcodeEntries[tcodeEntries.length - 1];
       lastJsonKey = info.key;
       lastJsonTcode = tcode;
-      lastJsonAgeSeconds = info.lastModified
-        ? Math.floor((Date.now() - info.lastModified.getTime()) / 1000)
+      lastJsonFileTimestamp = info.lastModified ? info.lastModified.getTime() : null;
+      lastJsonAgeSeconds = lastJsonFileTimestamp
+        ? Math.floor((Date.now() - lastJsonFileTimestamp) / 1000)
         : 0;
     }
-
-    // ── Emit exporter stats as Prometheus metrics ──
-    const statsMetrics = [
-      { fullName: `${config.metrics.prefix}_exporter_scrape_duration_seconds`, value: parseFloat((duration / 1000).toFixed(3)), labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_scrape_success_total`, value: successCount, labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_scrape_error_total`, value: errorCount, labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_scrape_tcodes_total`, value: latestFiles.size, labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_scrape_metrics_total`, value: allMetrics.length, labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_scrape_timestamp_seconds`, value: parseFloat((lastScrapeTimestamp / 1000).toFixed(3)), labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_json_age_seconds`, value: lastJsonAgeSeconds, labels: {} },
-      { fullName: `${config.metrics.prefix}_exporter_uptime_seconds`, value: Math.floor(process.uptime()), labels: {} },
-    ];
-    updateMetrics(statsMetrics);
 
     logger.info(
       {
@@ -267,25 +305,101 @@ app.get(config.server.metricsPath, async (_req, res) => {
         totalMetrics: allMetrics.length,
         durationMs: duration,
       },
-      '━━━ Scrape cycle complete ━━━',
+      '━━━ S3 Cache refresh cycle complete ━━━',
     );
+  } catch (err) {
+    logger.error({ err }, 'S3 Cache refresh cycle failed');
+    if (hasCachedData) {
+      logger.warn('Serving previously cached metrics despite S3 refresh failure');
+    } else {
+      logger.error('No cached metrics available; initial S3 load failed');
+    }
+  }
+}
 
+/**
+ * Single-flight S3 refresh manager.
+ * Ensures concurrent calls share the exact same in-flight S3 refresh promise
+ * to prevent duplicate simultaneous S3 requests.
+ *
+ * @returns {Promise<void>}
+ */
+function refreshS3Data() {
+  if (activeRefreshPromise) {
+    logger.debug('S3 refresh already in progress; attaching to active refresh');
+    return activeRefreshPromise;
+  }
+
+  activeRefreshPromise = doRefreshS3Data().finally(() => {
+    activeRefreshPromise = null;
+  });
+
+  return activeRefreshPromise;
+}
+
+/**
+ * Update dynamic exporter metrics (uptime, json age) before serving /metrics.
+ */
+function updateDynamicStats() {
+  const currentUptime = Math.floor(process.uptime());
+  const currentJsonAge = lastJsonFileTimestamp
+    ? Math.floor((Date.now() - lastJsonFileTimestamp) / 1000)
+    : lastJsonAgeSeconds;
+
+  const statsMetrics = [
+    { fullName: `${config.metrics.prefix}_exporter_scrape_duration_seconds`, value: parseFloat((lastScrapeDuration / 1000).toFixed(3)), labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_scrape_success_total`, value: lastScrapeSuccessCount, labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_scrape_error_total`, value: lastScrapeErrorCount, labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_scrape_tcodes_total`, value: lastScrapeTotalTcodes, labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_scrape_metrics_total`, value: lastScrapeTotalMetrics, labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_scrape_timestamp_seconds`, value: parseFloat((lastScrapeTimestamp / 1000).toFixed(3)), labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_json_age_seconds`, value: currentJsonAge, labels: {} },
+    { fullName: `${config.metrics.prefix}_exporter_uptime_seconds`, value: currentUptime, labels: {} },
+  ];
+  updateMetrics(statsMetrics);
+}
+
+// ── Metrics endpoint ────────────────────────────────────────────────────
+
+app.get(config.server.metricsPath, async (_req, res) => {
+  const cacheTtlMs = config.s3.cacheTtlSeconds * 1000;
+  const isCacheExpired = !hasCachedData || (Date.now() - lastCacheTimestamp >= cacheTtlMs);
+
+  if (isCacheExpired) {
+    if (!hasCachedData) {
+      // Cold start: wait for initial S3 data load so first scrape receives valid metrics
+      logger.info(
+        { reason: 'no_cache', ttlSeconds: config.s3.cacheTtlSeconds },
+        'Initial S3 load required before serving metrics…',
+      );
+      await refreshS3Data();
+    } else {
+      // Warm cache expired: refresh in background without blocking Prometheus scrape
+      logger.debug(
+        { reason: 'ttl_expired', ttlSeconds: config.s3.cacheTtlSeconds },
+        'S3 cache expired; triggering non-blocking background refresh and serving cached metrics…',
+      );
+      refreshS3Data().catch((err) => {
+        logger.error({ err }, 'Background S3 refresh failed; continuing to serve last known good metrics');
+      });
+    }
+  } else {
+    logger.debug(
+      { ageMs: Date.now() - lastCacheTimestamp, ttlMs: cacheTtlMs },
+      'Serving metrics from in-memory cache',
+    );
+  }
+
+  try {
+    updateDynamicStats();
     res.set('Content-Type', getRegistry().contentType);
     res.end(await getRegistry().metrics());
   } catch (err) {
-    logger.error({ err }, 'Metrics scrape cycle failed');
-
-    // Still serve whatever metrics we have, even if the scrape failed partially
-    try {
-      res.set('Content-Type', getRegistry().contentType);
-      res.end(await getRegistry().metrics());
-    } catch (serveErr) {
-      logger.error({ err: serveErr }, 'Failed to serve metrics after error');
-      res.status(500).json({
-        status: 'error',
-        message: 'Failed to scrape metrics',
-      });
-    }
+    logger.error({ err }, 'Failed to serve metrics after error');
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to scrape metrics',
+    });
   }
 });
 
@@ -294,7 +408,15 @@ app.get(config.server.metricsPath, async (_req, res) => {
 // The server only starts listening AFTER the AWS credential check passes.
 // This ensures the container healthcheck never returns UP with bad creds.
 
-verifyAwsCredentials().then(() => {
+verifyAwsCredentials().then(async () => {
+  // Pre-load S3 data once at startup before accepting traffic
+  logger.info('Pre-loading S3 data into cache at startup…');
+  try {
+    await refreshS3Data();
+  } catch (err) {
+    logger.error({ err }, 'Initial S3 pre-load failed; will retry on first metrics scrape');
+  }
+
   app.listen(config.server.port, config.server.host, () => {
     readiness.server = true;
     readiness.startedAt = Date.now();
@@ -305,6 +427,7 @@ verifyAwsCredentials().then(() => {
         host: config.server.host,
         metricsPath: config.server.metricsPath,
         bucket: config.aws.bucket,
+        cacheTtlSeconds: config.s3.cacheTtlSeconds,
       },
       'SAP Prometheus Exporter started',
     );

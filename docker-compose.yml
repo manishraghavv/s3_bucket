@@ -43,6 +43,8 @@ services:
       - "9106:9105"
     env_file:
       - ./.env
+    environment:
+      - S3_CACHE_TTL_SECONDS=${S3_CACHE_TTL_SECONDS:-15}
     networks:
       - monitoring
     healthcheck:

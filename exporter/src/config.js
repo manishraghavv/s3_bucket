@@ -136,6 +136,7 @@ const config = Object.freeze({
   s3: {
     requestTimeout: parseInt(process.env.S3_REQUEST_TIMEOUT, 10) || 10000,
     maxRetries: parseInt(process.env.S3_MAX_RETRIES, 10) || 3,
+    cacheTtlSeconds: parseInt(process.env.S3_CACHE_TTL_SECONDS, 10) || 15,
   },
 
   log: {

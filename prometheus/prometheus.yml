@@ -20,10 +20,12 @@ global:
 # Scrape configuration
 scrape_configs:
   # ── SAP Exporter ─────────────────────────────────────────────────────
-  # The exporter exposes SAP metrics scraped from S3 JSON files.
-  # Metrics are updated each time Prometheus scrapes this endpoint.
+  # The exporter exposes SAP metrics parsed from S3 JSON files.
+  # It re-reads S3 (ListObjectsV2) only when its in-memory cache is older than
+  # S3_CACHE_TTL_SECONDS (default 15s). Scrapes inside that window are served
+  # from cache with zero S3 calls, so effective S3 freshness is ~15s.
   - job_name: "sap-exporter"
-    scrape_interval: 10s
+    scrape_interval: 15s
     scrape_timeout: 10s
     metrics_path: /metrics
     scheme: http

@@ -300,6 +300,7 @@ function collectAL08(parsed, prefix) {
     USERID: ['USERID', 'userid'],
     TCODE: ['TCODE', 'tcode'],
     TERMINAL: ['TERMINAL', 'terminal'],
+    DATE: ['DATE', 'date'],
     TIME: ['TIME', 'time'],
     SESSION: ['SESSION', 'session'],
     TYPE: ['TYPE', 'type'],
@@ -322,6 +323,7 @@ function collectAL08(parsed, prefix) {
     ['userid', F.USERID],
     ['tcode', F.TCODE],
     ['terminal', F.TERMINAL],
+    ['date', F.DATE],
     ['time', F.TIME],
     ['session', F.SESSION],
     ['type', F.TYPE],
@@ -336,7 +338,7 @@ function collectAL08(parsed, prefix) {
 
   // ── Per-record session info — every field preserved ────────────────
   // One series per logged-on session (duplicate records are NOT collapsed).
-  // All 11 source fields are carried as snake_case labels with their raw
+  // All 12 source fields are carried as snake_case labels with their raw
   // value — empty TCODE stays "", numeric SESSION_ID/TYPE/STAT/MEMORY stay
   // their original numbers as strings ("0" for zero).
   // Raw label value: no trim, so the exact source bytes survive (e.g.
@@ -361,6 +363,7 @@ function collectAL08(parsed, prefix) {
         userid: infoVal(r, F.USERID),
         tcode: infoVal(r, F.TCODE),
         terminal: infoVal(r, F.TERMINAL),
+        date: infoVal(r, F.DATE),
         time: infoVal(r, F.TIME),
         session: infoVal(r, F.SESSION),
         type: infoVal(r, F.TYPE),
@@ -1812,9 +1815,49 @@ function collectSM13(parsed, prefix) {
   for (const [num, cnt] of freqMap(updates, ['errorNumber', 'ERRORNUMBER', 'error_number']))
     results.push({ fullName: `${prefix}_sm13_error_number_count`, value: cnt, labels: { error_number: num } });
 
-  // ── errorText — free text: presence + distinct scalars (never a label) ──
+  // ── errorText — free text: presence + distinct scalars ──
   results.push({ fullName: `${prefix}_sm13_error_text_present`, value: presentCount(['errorText', 'ERRORTEXT', 'error_text']), labels: {} });
   results.push({ fullName: `${prefix}_sm13_error_text_distinct`, value: distinctCount(['errorText', 'ERRORTEXT', 'error_text']), labels: {} });
+
+  // ── Per-update-request info — every source field preserved ──────────────
+  // One series per update request so the SM13 monitor can reconstruct each
+  // individual update request row (mirrors sap_al08_session_info / sap_sm12_lock_info).
+  // All 13 source fields are carried as labels preserving their exact raw values:
+  // vbkey, vbusr, vbdate, vbtimoff, vbstate, vbrc, vbtcode, vbreport, vbfunc,
+  // status, errorClass, errorNumber, errorText (along with snake_case aliases).
+  const infoVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).substring(0, 128);
+    }
+    return '';
+  };
+
+  for (const r of updates) {
+    results.push({
+      fullName: `${prefix}_sm13_update_info`,
+      value: 1,
+      labels: {
+        vbkey: infoVal(r, ['vbkey', 'VBKEY']),
+        vbusr: infoVal(r, ['vbusr', 'VBUSR', 'user', 'USER']),
+        vbdate: infoVal(r, ['vbdate', 'VBDATE', 'date', 'DATE']),
+        vbtimoff: infoVal(r, ['vbtimoff', 'VBTIMOFF']),
+        vbstate: infoVal(r, ['vbstate', 'VBSTATE', 'state', 'STATE']),
+        vbrc: infoVal(r, ['vbrc', 'VBRC', 'rc', 'RC']),
+        vbtcode: infoVal(r, ['vbtcode', 'VBTCODE', 'tcode', 'TCODE']),
+        vbreport: infoVal(r, ['vbreport', 'VBREPORT', 'report', 'REPORT']),
+        vbfunc: infoVal(r, ['vbfunc', 'VBFUNC', 'function', 'FUNCTION']),
+        status: infoVal(r, ['status', 'STATUS']),
+        errorClass: infoVal(r, ['errorClass', 'ERRORCLASS', 'error_class']),
+        errorNumber: infoVal(r, ['errorNumber', 'ERRORNUMBER', 'error_number']),
+        errorText: infoVal(r, ['errorText', 'ERRORTEXT', 'error_text']),
+        error_class: infoVal(r, ['error_class', 'errorClass', 'ERRORCLASS']),
+        error_number: infoVal(r, ['error_number', 'errorNumber', 'ERRORNUMBER']),
+        error_text: infoVal(r, ['error_text', 'errorText', 'ERRORTEXT']),
+      },
+    });
+  }
 
   return results;
 }
@@ -1960,8 +2003,18 @@ function collectSM20(parsed, prefix) {
     TERMINAL: ['TERMINAL', 'terminal'],
     TCODE: ['TCODE', 'tcode'],
     CLIENT: ['CLIENT', 'client', 'MANDT'],
+    AUDIT_DATE: ['AUDIT_DATE', 'audit_date', 'DATE', 'date'],
+    AUDIT_TIME: ['AUDIT_TIME', 'audit_time', 'TIME', 'time'],
+    AUDIT_LOG_MSG_TXT: ['AUDIT_LOG_MSG_TXT', 'audit_log_msg_txt', 'MESSAGE', 'message', 'TEXT', 'text', 'AUDIT_LOG_MESSAGE'],
     EVENT_ID: ['EVENT_ID', 'EVENTID', 'event_id', 'ROW_ID', 'row_id', 'ID', 'id', 'EVENT', 'event'],
   };
+  const hasExtendedFields = events.some(
+    (r) =>
+      F.AUDIT_DATE.some((k) => k in r) ||
+      F.AUDIT_TIME.some((k) => k in r) ||
+      F.AUDIT_LOG_MSG_TXT.some((k) => k in r),
+  );
+
   // snake_case label name per source field — 1:1, in source order.
   const FIELD_NAMES = [
     ['sender_id', F.SENDER_ID],
@@ -1970,6 +2023,13 @@ function collectSM20(parsed, prefix) {
     ['tcode', F.TCODE],
     ['client', F.CLIENT],
   ];
+  if (hasExtendedFields) {
+    FIELD_NAMES.push(
+      ['audit_date', F.AUDIT_DATE],
+      ['audit_time', F.AUDIT_TIME],
+      ['audit_log_msg_txt', F.AUDIT_LOG_MSG_TXT],
+    );
+  }
 
   // ── Raw label value helpers (NO trim, NO normalization) ────────────
   // event_info / count labels carry the exact source bytes. Only absent
@@ -1984,9 +2044,9 @@ function collectSM20(parsed, prefix) {
     }
     return '';
   };
-  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 128);
+  const infoVal = (r, fields) => rawVal(r, fields).substring(0, 256);
 
-  // ── Presence + distinct for ALL 5 fields ───────────────────────────
+  // ── Presence + distinct for ALL fields ─────────────────────────────
   // "" = absent; any non-empty raw string / numeric 0 = present. No trim
   // before testing; distinct = distinct raw non-empty values.
   const presentCount = (fields) => countWhere(events, (r) => rawVal(r, fields) !== '');
@@ -2016,10 +2076,10 @@ function collectSM20(parsed, prefix) {
       results.push({ fullName: `${prefix}_sm20_${name}_count`, value: cnt, labels: { [name]: value } });
   }
 
-  // ── Per-record event_info — ALL 5 fields, one series per record ────
+  // ── Per-record event_info — ALL source fields, one series per record ────
   // Raw label values (NO trim): empty user/terminal/tcode/client stay "",
   // client="000"/"811" keep their exact codes. Every input record produces
-  // its own info series with a deterministic event_key so all 2666 events
+  // its own info series with a deterministic event_key so all events
   // survive Prometheus exposition into the monitoring store without collision.
   for (let idx = 0; idx < events.length; idx++) {
     const r = events[idx];
@@ -2029,21 +2089,34 @@ function collectSM20(parsed, prefix) {
     const user = infoVal(r, F.USER);
     const tcode = infoVal(r, F.TCODE);
     const terminal = infoVal(r, F.TERMINAL);
+    const auditDate = hasExtendedFields ? infoVal(r, F.AUDIT_DATE) : '';
+    const auditTime = hasExtendedFields ? infoVal(r, F.AUDIT_TIME) : '';
+    const auditLogMsgTxt = hasExtendedFields ? infoVal(r, F.AUDIT_LOG_MSG_TXT) : '';
+
     const eventKey = rawEventId !== ''
       ? rawEventId.substring(0, 110)
-      : [senderId, client, user, tcode, terminal, String(idx)].join('|').substring(0, 110);
+      : (hasExtendedFields
+          ? [senderId, client, user, tcode, terminal, auditDate, auditTime, String(idx)].join('|').substring(0, 110)
+          : [senderId, client, user, tcode, terminal, String(idx)].join('|').substring(0, 110));
+
+    const labels = {
+      sender_id: senderId,
+      user: user,
+      terminal: terminal,
+      tcode: tcode,
+      client: client,
+    };
+    if (hasExtendedFields) {
+      labels.audit_date = auditDate;
+      labels.audit_time = auditTime;
+      labels.audit_log_msg_txt = auditLogMsgTxt;
+    }
+    labels.event_key = eventKey;
 
     results.push({
       fullName: `${prefix}_sm20_event_info`,
       value: 1,
-      labels: {
-        sender_id: senderId,
-        user: user,
-        terminal: terminal,
-        tcode: tcode,
-        client: client,
-        event_key: eventKey,
-      },
+      labels,
     });
   }
 
@@ -2414,13 +2487,16 @@ function collectSM37(parsed, prefix) {
   const jobs = rows.filter((r) => typeof r === 'object' && r !== null);
   if (jobs.length === 0) return results;
 
+  // Detect 14-field schema (authoritative active S3 payload) vs 24-field legacy schema
+  const is14Field = jobs.length > 0 && ('PROGNAME' in jobs[0] || 'VARIANT' in jobs[0] || 'STEPCOUNT' in jobs[0]);
+
   // Candidate keys per source field — exact uppercase field first, lower-case
   // fallback after (same pattern as the other T-Code collectors).
   const F = {
     JOBNAME: ['JOBNAME', 'jobname'],
     JOBCOUNT: ['JOBCOUNT', 'jobcount'],
     JOBGROUP: ['JOBGROUP', 'jobgroup'],
-    INTREPORT: ['INTREPORT', 'intreport'],
+    INTREPORT: ['INTREPORT', 'intreport', 'PROGNAME', 'progname'],
     SDLSTRTDT: ['SDLSTRTDT', 'sdlstrtdt'],
     SDLSTRTTM: ['SDLSTRTTM', 'sdlstrttm'],
     SDLUNAME: ['SDLUNAME', 'sdluname'],
@@ -2441,6 +2517,9 @@ function collectSM37(parsed, prefix) {
     PRIORITY: ['PRIORITY', 'priority'],
     EXECSERVER: ['EXECSERVER', 'execserver'],
     TGTSRVGRP: ['TGTSRVGRP', 'tgtsrvgrp'],
+    STEPCOUNT: ['STEPCOUNT', 'stepcount'],
+    PROGNAME: ['PROGNAME', 'progname', 'INTREPORT', 'intreport'],
+    VARIANT: ['VARIANT', 'variant'],
   };
 
   // ── Total jobs ─────────────────────────────────────────────────────
@@ -2612,16 +2691,30 @@ function collectSM37(parsed, prefix) {
     ['execserver', F.EXECSERVER],
     ['tgtsrvgrp', F.TGTSRVGRP],
   ];
+  if (is14Field) {
+    FIELD_NAMES.push(['stepcount', F.STEPCOUNT]);
+    FIELD_NAMES.push(['progname', F.PROGNAME]);
+    FIELD_NAMES.push(['variant', F.VARIANT]);
+  }
   for (const [name, fields] of FIELD_NAMES) {
     results.push({ fullName: `${prefix}_sm37_${name}_present`, value: presentCount(fields), labels: {} });
     results.push({ fullName: `${prefix}_sm37_${name}_distinct`, value: distinctCount(fields), labels: {} });
   }
 
   // ── Per-job info metric — every field preserved, one series per job ──
-  // All 24 source fields become snake_case labels carrying the raw value.
-  // Numeric values (SUCCNUM/PREDNUM/PRIORITY) are kept as strings ("0")
-  // while the numeric aggregate gauges above carry the numbers. Jobs with
-  // the same JOBNAME but different JOBCOUNT remain separate series.
+  // For 14-field schema (authoritative real S3 payload):
+  // Exactly the 14 source fields become snake_case labels + job_key.
+  // Values are exact strings (no trim on priority to keep "0 ").
+  // For 24-field legacy schema (test fixture):
+  // Exactly the 24 legacy snake_case labels are emitted.
+  const rawInfoVal = (r, fields) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).substring(0, 128);
+    }
+    return '';
+  };
   const infoVal = (r, fields) => {
     for (const f of fields) {
       const raw = r[f];
@@ -2630,37 +2723,64 @@ function collectSM37(parsed, prefix) {
     }
     return '';
   };
-  for (const r of jobs) {
-    results.push({
-      fullName: `${prefix}_sm37_job_info`,
-      value: 1,
-      labels: {
-        jobname: infoVal(r, F.JOBNAME),
-        jobcount: infoVal(r, F.JOBCOUNT),
-        jobgroup: infoVal(r, F.JOBGROUP),
-        intreport: infoVal(r, F.INTREPORT),
-        sdlstrtdt: infoVal(r, F.SDLSTRTDT),
-        sdlstrttm: infoVal(r, F.SDLSTRTTM),
-        sdluname: infoVal(r, F.SDLUNAME),
-        lastchdate: infoVal(r, F.LASTCHDATE),
-        lastchtime: infoVal(r, F.LASTCHTIME),
-        lastchname: infoVal(r, F.LASTCHNAME),
-        strtdate: infoVal(r, F.STRTDATE),
-        strttime: infoVal(r, F.STRTTIME),
-        enddate: infoVal(r, F.ENDDATE),
-        endtime: infoVal(r, F.ENDTIME),
-        status: infoVal(r, F.STATUS),
-        authcknam: infoVal(r, F.AUTHCKNAM),
-        succnum: infoVal(r, F.SUCCNUM),
-        prednum: infoVal(r, F.PREDNUM),
-        laststrtdt: infoVal(r, F.LASTSTRTDT),
-        laststrttm: infoVal(r, F.LASTSTRTTM),
-        jobclass: infoVal(r, F.JOBCLASS),
-        priority: infoVal(r, F.PRIORITY),
-        execserver: infoVal(r, F.EXECSERVER),
-        tgtsrvgrp: infoVal(r, F.TGTSRVGRP),
-      },
+
+  if (is14Field) {
+    jobs.forEach((r, idx) => {
+      results.push({
+        fullName: `${prefix}_sm37_job_info`,
+        value: 1,
+        labels: {
+          jobname: rawInfoVal(r, F.JOBNAME),
+          status: rawInfoVal(r, F.STATUS),
+          strtdate: rawInfoVal(r, F.STRTDATE),
+          strttime: rawInfoVal(r, F.STRTTIME),
+          enddate: rawInfoVal(r, F.ENDDATE),
+          endtime: rawInfoVal(r, F.ENDTIME),
+          sdluname: rawInfoVal(r, F.SDLUNAME),
+          lastchname: rawInfoVal(r, F.LASTCHNAME),
+          jobclass: rawInfoVal(r, F.JOBCLASS),
+          priority: rawInfoVal(r, F.PRIORITY),
+          execserver: rawInfoVal(r, F.EXECSERVER),
+          stepcount: rawInfoVal(r, F.STEPCOUNT),
+          progname: rawInfoVal(r, F.PROGNAME),
+          variant: rawInfoVal(r, F.VARIANT),
+          job_key: String(idx + 1),
+        },
+      });
     });
+  } else {
+    for (const r of jobs) {
+      results.push({
+        fullName: `${prefix}_sm37_job_info`,
+        value: 1,
+        labels: {
+          jobname: infoVal(r, F.JOBNAME),
+          jobcount: infoVal(r, F.JOBCOUNT),
+          jobgroup: infoVal(r, F.JOBGROUP),
+          intreport: infoVal(r, F.INTREPORT),
+          sdlstrtdt: infoVal(r, F.SDLSTRTDT),
+          sdlstrttm: infoVal(r, F.SDLSTRTTM),
+          sdluname: infoVal(r, F.SDLUNAME),
+          lastchdate: infoVal(r, F.LASTCHDATE),
+          lastchtime: infoVal(r, F.LASTCHTIME),
+          lastchname: infoVal(r, F.LASTCHNAME),
+          strtdate: infoVal(r, F.STRTDATE),
+          strttime: infoVal(r, F.STRTTIME),
+          enddate: infoVal(r, F.ENDDATE),
+          endtime: infoVal(r, F.ENDTIME),
+          status: infoVal(r, F.STATUS),
+          authcknam: infoVal(r, F.AUTHCKNAM),
+          succnum: infoVal(r, F.SUCCNUM),
+          prednum: infoVal(r, F.PREDNUM),
+          laststrtdt: infoVal(r, F.LASTSTRTDT),
+          laststrttm: infoVal(r, F.LASTSTRTTM),
+          jobclass: infoVal(r, F.JOBCLASS),
+          priority: infoVal(r, F.PRIORITY),
+          execserver: infoVal(r, F.EXECSERVER),
+          tgtsrvgrp: infoVal(r, F.TGTSRVGRP),
+        },
+      });
+    }
   }
 
   return results;
@@ -2727,16 +2847,24 @@ function collectSP01(parsed, prefix) {
 
   // Convert an SAP timestamp (RQCRETIME, "YYYYMMDDHHMMSS") to a local ISO
   // string so Grafana's dateTimeAsIso unit renders a readable Created Time.
-  const toIsoLocal = (raw) => {
+  const toIsoLocal = (raw, rawDate) => {
     const m = String(raw || '').trim().match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?/);
-    if (!m) return raw;
+    if (!m) {
+      if (rawDate && raw) {
+        const dm = String(rawDate).trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (dm) {
+          return `${dm[3]}-${dm[2]}-${dm[1]}T${raw}`;
+        }
+      }
+      return raw;
+    }
     return `${m[1]}-${m[2]}-${m[3]}T${m[4] || '00'}:${m[5] || '00'}:${m[6] || '00'}`;
   };
 
   // ── Status classification ──────────────────────────────────────────────
   // Prefer the real SP01 fields (RQFINAL/RQERROR); fall back to the legacy
   // OUTSTATE/STATE payloads so existing exporters keep working unchanged.
-  // RQFINAL: "C" → completed, "." → pending, anything else → other.
+  // RQFINAL: "C" → completed, "." or "-" → pending/waiting, anything else → other.
   // RQERROR: "0"/empty → no error, any non-zero value → error.
   const classify = (r) => {
     const finalStatus = strField(r, ['RQFINAL', 'rqfinal']);
@@ -2744,7 +2872,7 @@ function collectSP01(parsed, prefix) {
     if (finalStatus !== '' || errorField !== '') {
       if (errorField !== '' && errorField !== '0') return 'error';
       if (finalStatus === 'C') return 'completed';
-      if (finalStatus === '.') return 'waiting';
+      if (finalStatus === '.' || finalStatus === '-') return 'waiting';
       return 'other';
     }
     const state = norm(r.OUTSTATE || r.outstate || r.STATE || r.state || '');
@@ -2802,17 +2930,19 @@ function collectSP01(parsed, prefix) {
   // Info-style metric: one series per spool request (value always 1). Emitted
   // only when real SP01 fields are present — legacy OUTSTATE rows are skipped.
   for (const r of requests) {
-    const hasRealFields = ['RQIDENT', 'RQOWNER', 'RQDEST', 'RQCRETIME', 'RQFINAL', 'RQERROR']
+    const hasRealFields = ['RQIDENT', 'rqident', 'SPOOL_NO', 'spool_no', 'RQOWNER', 'rqowner', 'RQDEST', 'rqdest', 'RQCRETIME', 'rqcretime', 'RQFINAL', 'rqfinal', 'RQERROR', 'rqerror', 'DATE', 'date', 'TIME', 'time']
       .some((f) => r[f] !== undefined && r[f] !== null && String(r[f]).trim() !== '');
     if (!hasRealFields) continue;
+    const rawTime = strField(r, ['RQCRETIME', 'rqcretime', 'TIME', 'time']);
+    const rawDate = strField(r, ['RQCDATE', 'rqcdate', 'DATE', 'date']);
     results.push({
       fullName: `${prefix}_sp01_request_info`,
       value: 1,
       labels: {
-        rqident: strField(r, ['RQIDENT', 'rqident']),
+        rqident: strField(r, ['RQIDENT', 'rqident', 'SPOOL_NO', 'spool_no']),
         rqowner: strField(r, ['RQOWNER', 'rqowner']),
         rqdest: strField(r, ['RQDEST', 'rqdest']),
-        rqcretime: toIsoLocal(strField(r, ['RQCRETIME', 'rqcretime'])),
+        rqcretime: toIsoLocal(rawTime, rawDate),
         rqfinal: strField(r, ['RQFINAL', 'rqfinal']),
         rqerror: strField(r, ['RQERROR', 'rqerror']),
       },
@@ -2830,9 +2960,9 @@ function collectSP01(parsed, prefix) {
     return seen.size;
   };
 
-  // RQIDENT — high-cardinality request ID: presence + distinct only (no label)
-  results.push({ fullName: `${prefix}_sp01_request_id_present`, value: presentCount(['RQIDENT', 'rqident']), labels: {} });
-  results.push({ fullName: `${prefix}_sp01_request_id_distinct`, value: distinctCount(['RQIDENT', 'rqident']), labels: {} });
+  // RQIDENT / SPOOL_NO — high-cardinality request ID: presence + distinct only (no label)
+  results.push({ fullName: `${prefix}_sp01_request_id_present`, value: presentCount(['RQIDENT', 'rqident', 'SPOOL_NO', 'spool_no']), labels: {} });
+  results.push({ fullName: `${prefix}_sp01_request_id_distinct`, value: distinctCount(['RQIDENT', 'rqident', 'SPOOL_NO', 'spool_no']), labels: {} });
 
   // RQOWNER — bounded categorical → per-value count
   for (const [owner, cnt] of freqMap(requests, ['RQOWNER', 'rqowner']))
@@ -2846,23 +2976,45 @@ function collectSP01(parsed, prefix) {
   for (const [dest, cnt] of freqMap(requests, ['RQDEST', 'rqdest']))
     results.push({ fullName: `${prefix}_sp01_destination_count`, value: cnt, labels: { destination: dest } });
 
-  // RQCDATE — empty in the real payload → presence + distinct (0 when absent)
-  results.push({ fullName: `${prefix}_sp01_creation_date_present`, value: presentCount(['RQCDATE', 'rqcdate']), labels: {} });
-  results.push({ fullName: `${prefix}_sp01_creation_date_distinct`, value: distinctCount(['RQCDATE', 'rqcdate']), labels: {} });
+  // RQCDATE / DATE — creation date → presence + distinct
+  results.push({ fullName: `${prefix}_sp01_creation_date_present`, value: presentCount(['RQCDATE', 'rqcdate', 'DATE', 'date']), labels: {} });
+  results.push({ fullName: `${prefix}_sp01_creation_date_distinct`, value: distinctCount(['RQCDATE', 'rqcdate', 'DATE', 'date']), labels: {} });
 
-  // RQCRETIME — YYYYMMDDHHMMSS00 → latest date + time as numeric gauges
+  // RQCRETIME / (DATE + TIME) — latest date + time as numeric gauges
   let latestCreationDate = null;
   let latestCreationTime = null;
   for (const r of requests) {
     const raw = strField(r, ['RQCRETIME', 'rqcretime']);
     const m = raw.match(/^(\d{8})(\d{6})/);
-    if (!m) continue;
-    const date = parseInt(m[1], 10); // YYYYMMDD
-    const time = parseInt(m[2], 10); // HHMMSS (leading zeros are notation only)
-    const score = date * 1000000 + time;
-    if (latestCreationDate === null || score > latestCreationDate * 1000000 + latestCreationTime) {
-      latestCreationDate = date;
-      latestCreationTime = time;
+    if (m) {
+      const date = parseInt(m[1], 10); // YYYYMMDD
+      const time = parseInt(m[2], 10); // HHMMSS (leading zeros are notation only)
+      const score = date * 1000000 + time;
+      if (latestCreationDate === null || score > latestCreationDate * 1000000 + latestCreationTime) {
+        latestCreationDate = date;
+        latestCreationTime = time;
+      }
+      continue;
+    }
+    const dStr = strField(r, ['DATE', 'date']);
+    const tStr = strField(r, ['TIME', 'time']);
+    if (dStr) {
+      const dm = dStr.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (dm) {
+        const date = parseInt(`${dm[3]}${dm[2]}${dm[1]}`, 10);
+        let time = 0;
+        if (tStr) {
+          const tm = tStr.match(/^(\d{2}):(\d{2}):(\d{2})$/);
+          if (tm) {
+            time = parseInt(`${tm[1]}${tm[2]}${tm[3]}`, 10);
+          }
+        }
+        const score = date * 1000000 + time;
+        if (latestCreationDate === null || score > latestCreationDate * 1000000 + latestCreationTime) {
+          latestCreationDate = date;
+          latestCreationTime = time;
+        }
+      }
     }
   }
   if (latestCreationDate !== null) results.push({ fullName: `${prefix}_sp01_latest_creation_date`, value: latestCreationDate, labels: {} });
@@ -3017,7 +3169,7 @@ function collectST02(rows, prefix) {
     const dbAccess = numField(r, ['DB_ACCESS', 'db_access', 'DB_ACC']);
     if (dbAccess !== null) results.push({ fullName: `${prefix}_st02_db_access`, value: dbAccess, labels });
 
-    const swap = numField(r, ['SWAP', 'swap', 'SWAP_COUNT']);
+    const swap = numField(r, ['SWAP', 'SWAPS', 'swap', 'swaps', 'SWAP_COUNT']);
     if (swap !== null) results.push({ fullName: `${prefix}_st02_swap_count`, value: swap, labels });
 
     const used = numField(r, ['USED_SPACE', 'used_space', 'USED_SIZE']);
@@ -3040,11 +3192,11 @@ function collectST02(rows, prefix) {
 }
 
 /**
- * ST03N — Workload Analysis
+ * ST03N — legacy flat export (retained for older flat payloads)
  * Actual JSON: { "data": [ { TASKTYPE, STARTDATE, STARTTIME, RESPTI, CPUTI, DBP_TIME }, ... ] }
  * Values are cumulative milliseconds. Missing fields (lock/queue/roll) are skipped gracefully.
  */
-function collectST03N(rows, prefix) {
+function collectST03NLegacyRows(rows, prefix) {
   const results = [];
   const workloads = rows.filter((r) => typeof r === 'object' && r !== null);
   if (workloads.length === 0) return results;
@@ -3733,10 +3885,637 @@ function collectRZ20(parsed, prefix) {
   for (const [user, cnt] of freqMap(alerts, F.STCHGUSR))
     results.push({ fullName: `${prefix}_rz20_status_change_user_count`, value: cnt, labels: { user } });
 
+  // ── Per-alert info series — all 13 source fields preserved ─────────
+  // One series per alert so the RZ20 monitor can reconstruct each individual
+  // alert row (mirrors sap_sm13_update_info / sap_al08_session_info).
+  const infoVal = (r, fields, maxLen = 128) => {
+    for (const f of fields) {
+      const raw = r[f];
+      if (raw === undefined || raw === null) continue;
+      return String(raw).substring(0, maxLen);
+    }
+    return '';
+  };
+
+  for (const r of alerts) {
+    results.push({
+      fullName: `${prefix}_rz20_alert_info`,
+      value: 1,
+      labels: {
+        alsysid: infoVal(r, F.SYSID),
+        msegname: infoVal(r, F.MSEGNAME),
+        alertdate: infoVal(r, F.ALERTDATE),
+        alerttime: infoVal(r, F.ALERTTIME),
+        alseverity: infoVal(r, F.SEVERITY),
+        objectname: infoVal(r, F.OBJECT),
+        shortname: infoVal(r, F.SHORTNAME),
+        alstatus: infoVal(r, F.STATUS),
+        statchgdat: infoVal(r, F.STCHGDAT),
+        statchgtim: infoVal(r, F.STCHGTIM),
+        statchgusr: infoVal(r, F.STCHGUSR),
+        reportedby: infoVal(r, F.REPORTEDBY),
+        msg: infoVal(r, F.MSG, 256),
+      },
+    });
+  }
+
   return results;
 }
 
 // ── T-Code Collector Registry ────────────────────────────────────────────
+
+// ── ST03N — Workload Analysis (multi-section document) ───────────────────
+//
+// The CURRENT ST03N payload is not the legacy flat { data: [...] } export. It is
+// a nested document with 20 top-level keys — 5 metadata fields plus the 15 data
+// sections below (nothing else is present in the live object):
+//
+//   monitor_type, system, client, periodType, periodStart,
+//   workloadOverview[17]      transactionProfile[99]    earlywatchProfile[68]
+//   timeProfile[8]            timeProfileTotal[0]       topResponseTime[40]
+//   topDbAccesses[40]         memoryUseStatistics[99]   rfcClientProfile[26]
+//   rfcClientDestProfile[12]  rfcServerProfile[33]      rfcServerDestProfile[21]
+//   userProfile[13]           settlementStatistics[4]   frontendStatistics[6]
+//
+// (Record counts are the ones observed in the live 2026-09-15 snapshot; every
+// section is sized by the payload itself — nothing is assumed.)
+//
+// Design:
+//   - Every numeric source field of workloadOverview, timeProfile,
+//     timeProfileTotal, topResponseTime, topDbAccesses, rfcClientProfile,
+//     rfcClientDestProfile, rfcServerProfile, rfcServerDestProfile, userProfile,
+//     settlementStatistics and frontendStatistics is exposed as its own metric.
+//     Values are emitted 1:1 in the source unit named by the metric suffix
+//     (_ms, _s, _kb, _bytes) and numeric 0 is preserved.
+//   - transactionProfile keeps its documented dimension as a label
+//     ({transaction}) plus {background_job}, because one report can be reported
+//     once per job (99 records → 68 distinct names): the pair identifies every
+//     record, so no series is overwritten. The large per-report sections
+//     (earlywatchProfile[68], memoryUseStatistics[99]) are aggregated with
+//     dialog-step weighting rather than emitting 68/99 report names as labels
+//     (cardinality guardrail — see the note in metrics.js about dynamic gauges).
+//   - The two top-N sections carry enddate/endtime in addition to their
+//     documented dimension labels: those two fields are what make a "top" entry
+//     unique (40 records → 40 distinct label sets), so no record is lost in the
+//     registry and the label set stays bounded by the section size.
+//   - timeProfileTotal is an EMPTY array in the live payload: the section still
+//     emits its record-count metric (value 0) and never fails the parse.
+//   - Label cardinality stays bounded by the section size: workload 17,
+//     timeProfile 8, userProfile 13, RFC 26/33/21/12, frontend 6, top-* 40.
+//   - Legacy metric names that the WADDAYA app presets and the Grafana ST03N
+//     dashboard already query are emitted as aliases of the same real source
+//     fields (task_count, dialog_count, response_time_ms, processing_time_ms,
+//     cpu_time_ms, db_time_ms, queue_time_ms, gui_time_ms, sequential_reads,
+//     directory_reads, physical_reads, roll_wait_ms) so no existing panel needs
+//     to change. Aliases exist only where the source really has the value.
+
+const ST03N_FIELD_CACHE = new WeakMap();
+
+/** 'avgResponseTimeMs' / 'AVG_RESPONSE_TIME_MS' → 'avgresponsetimems'. */
+function st03nFieldKey(name) {
+  return String(name).replace(/[\s_-]/g, '').toLowerCase();
+}
+
+/**
+ * Cached case/separator-insensitive view of one source record, so the camelCase
+ * keys of the current payload and the legacy UPPER_SNAKE keys both resolve.
+ */
+function st03nRowView(row) {
+  let view = ST03N_FIELD_CACHE.get(row);
+  if (!view) {
+    view = Object.create(null);
+    for (const key of Object.keys(row)) view[st03nFieldKey(key)] = row[key];
+    ST03N_FIELD_CACHE.set(row, view);
+  }
+  return view;
+}
+
+/** Numeric source field; null when absent/unparseable. Numeric 0 is kept. */
+function st03nNum(row, name) {
+  if (!row || typeof row !== 'object') return null;
+  const raw = st03nRowView(row)[st03nFieldKey(name)];
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = parseFloat(String(raw).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/** String source field, trimmed; '' when absent. */
+function st03nStr(row, name) {
+  if (!row || typeof row !== 'object') return '';
+  const raw = st03nRowView(row)[st03nFieldKey(name)];
+  return raw === undefined || raw === null ? '' : String(raw).trim();
+}
+
+/** First array present among the candidate keys, records only. */
+function st03nArray(parsed, keys) {
+  for (const key of keys) {
+    const value = parsed[key];
+    if (Array.isArray(value)) return value.filter((r) => r && typeof r === 'object');
+  }
+  return [];
+}
+
+function st03nSum(rows, name) {
+  let total = 0;
+  for (const row of rows) {
+    const value = st03nNum(row, name);
+    if (value !== null) total += value;
+  }
+  return parseFloat(total.toFixed(3));
+}
+
+function st03nMax(rows, name) {
+  let max = null;
+  for (const row of rows) {
+    const value = st03nNum(row, name);
+    if (value !== null && (max === null || value > max)) max = value;
+  }
+  return max;
+}
+
+/** Σ(value × weight) / Σ(weight) — null when no row carries a weight. */
+function st03nWeightedAvg(rows, name, weightField) {
+  let weighted = 0;
+  let weight = 0;
+  for (const row of rows) {
+    const w = st03nNum(row, weightField);
+    const value = st03nNum(row, name);
+    if (value === null || w === null || w <= 0) continue;
+    weighted += value * w;
+    weight += w;
+  }
+  if (weight <= 0) return null;
+  return parseFloat((weighted / weight).toFixed(3));
+}
+
+/**
+ * Per-section emission plan.
+ *
+ *   keys         candidate payload keys (camelCase first, snake_case tolerated)
+ *   dimension    source field promoted to a label ({field} → {label})
+ *   extraLabels  additional [label, sourceField] pairs
+ *   metrics      [sourceField, metricSuffix] pairs — emitted 1:1, source units
+ *   derived      [metricSuffix, row => value] — documented derived numbers
+ *   constants    [metricSuffix, value] — per-record constants (e.g. task_count)
+ *   aggregate    cross-row sums / weighted averages / maxima ({weight, ...})
+ *   ignored      source fields deliberately not emitted (documented reason)
+ */
+const ST03N_SECTIONS = [
+  {
+    section: 'workloadOverview',
+    keys: ['workloadOverview', 'workload_overview'],
+    dimension: { field: 'taskTypeName', label: 'task_type' },
+    metrics: [
+      ['numberOfDialogSteps', 'workload_dialog_steps'],
+      ['avgResponseTimeMs', 'workload_avg_response_time_ms'],
+      ['avgProcessingTimeMs', 'workload_avg_processing_time_ms'],
+      ['avgCpuTimeMs', 'workload_avg_cpu_time_ms'],
+      ['avgDbTimeMs', 'workload_avg_db_time_ms'],
+      ['avgDbProcedureCallMs', 'workload_avg_db_procedure_call_ms'],
+      ['avgWaitTimeMs', 'workload_avg_wait_time_ms'],
+      ['avgGuiTimeMs', 'workload_avg_gui_time_ms'],
+      ['requestedDataKb', 'workload_requested_data_kb'],
+      ['numberOfSequentialReads', 'workload_sequential_reads'],
+      ['totalSequentialReadTimeS', 'workload_sequential_read_time_s'],
+      ['numberOfDirectReads', 'workload_direct_reads'],
+      ['totalDirectReadTimeS', 'workload_direct_read_time_s'],
+      ['numberOfLogicalDbChanges', 'workload_logical_db_changes'],
+      ['totalRollOutTimeS', 'workload_roll_out_time_s'],
+      ['numberOfRollInOperations', 'workload_roll_in_operations'],
+      ['numberOfRollOutOperations', 'workload_roll_out_operations'],
+      // Legacy / app-facing aliases of the same source fields.
+      ['numberOfDialogSteps', 'dialog_count'],
+      ['avgResponseTimeMs', 'response_time_ms'],
+      ['avgProcessingTimeMs', 'processing_time_ms'],
+      ['avgCpuTimeMs', 'cpu_time_ms'],
+      ['avgDbTimeMs', 'db_time_ms'],
+      ['avgWaitTimeMs', 'queue_time_ms'],
+      ['avgGuiTimeMs', 'gui_time_ms'],
+      ['numberOfSequentialReads', 'sequential_reads'],
+      ['numberOfDirectReads', 'directory_reads'],
+    ],
+    derived: [
+      [
+        'physical_reads',
+        (row) => {
+          const sequential = st03nNum(row, 'numberOfSequentialReads');
+          const direct = st03nNum(row, 'numberOfDirectReads');
+          if (sequential === null && direct === null) return null;
+          // Documented derived value: physical reads = sequential + direct reads.
+          return (sequential || 0) + (direct || 0);
+        },
+      ],
+    ],
+    constants: [['task_count', 1]],
+  },
+  {
+    section: 'transactionProfile',
+    keys: ['transactionProfile', 'transaction_profile'],
+    dimension: { field: 'reportOrTransactionName', label: 'transaction' },
+    // A report can appear once per background job (99 records → 68 distinct
+    // report names), so the job is part of the identity of the record. Without
+    // it those records would collapse onto one another in the metric registry.
+    // The label set stays bounded by the section size (99).
+    extraLabels: [['background_job', 'nameOfBackgroundJob']],
+    metrics: [
+      ['numberOfDialogSteps', 'transaction_dialog_steps'],
+      ['totalResponseTimeS', 'transaction_total_response_time_s'],
+      ['avgResponseTimeMs', 'transaction_avg_response_time_ms'],
+      ['totalProcessingTimeS', 'transaction_total_processing_time_s'],
+      ['avgProcessingTimeMs', 'transaction_avg_processing_time_ms'],
+      ['totalCpuTimeS', 'transaction_total_cpu_time_s'],
+      ['avgCpuTimeMs', 'transaction_avg_cpu_time_ms'],
+      ['totalDatabaseTimeS', 'transaction_total_database_time_s'],
+      ['avgDbTimeMs', 'transaction_avg_db_time_ms'],
+      ['totalRollWaitTimeS', 'transaction_total_roll_wait_time_s'],
+      ['numberOfRoundtrips', 'transaction_roundtrips'],
+      ['avgFrontendNwTimeMs', 'transaction_avg_frontend_nw_time_ms'],
+      ['avgGuiTimeMs', 'transaction_avg_gui_time_ms'],
+      ['requestedDataKb', 'transaction_requested_data_kb'],
+      ['avgDataVolToServerByte', 'transaction_avg_data_vol_to_server_bytes'],
+      ['avgDataVolToFrontEndByte', 'transaction_avg_data_vol_to_frontend_bytes'],
+    ],
+  },
+  {
+    section: 'earlywatchProfile',
+    keys: ['earlywatchProfile', 'earlywatch_profile'],
+    aggregate: {
+      weight: 'numberOfSteps',
+      sum: [
+        ['numberOfSteps', 'earlywatch_steps'],
+        ['totalResponseTimeS', 'earlywatch_total_response_time_s'],
+        ['totalProcessingTimeS', 'earlywatch_total_processing_time_s'],
+        ['totalDbTimeS', 'earlywatch_total_db_time_s'],
+        ['totalRollWaitTimeS', 'earlywatch_total_roll_wait_time_s'],
+        ['requestedDataKb', 'earlywatch_requested_data_kb'],
+      ],
+      weightedAvg: [
+        ['avgResponseTimeMs', 'earlywatch_avg_response_time_ms'],
+        ['avgProcessingTimeMs', 'earlywatch_avg_processing_time_ms'],
+        ['avgCpuTimeMs', 'earlywatch_avg_cpu_time_ms'],
+        ['avgDbTimeMs', 'earlywatch_avg_db_time_ms'],
+        ['avgRollWaitTimeMs', 'earlywatch_avg_roll_wait_time_ms'],
+        ['avgWaitTimeMs', 'earlywatch_avg_wait_time_ms'],
+        ['avgFrontendNwTimeMs', 'earlywatch_avg_frontend_nw_time_ms'],
+        ['avgGuiTimeMs', 'earlywatch_avg_gui_time_ms'],
+      ],
+    },
+    ignored: ['reportOrTransactionName', 'shortText'],
+  },
+  {
+    section: 'timeProfile',
+    keys: ['timeProfile', 'time_profile'],
+    dimension: { field: 'timeInterval', label: 'time_interval' },
+    metrics: [
+      ['numberOfDialogSteps', 'timeprofile_dialog_steps'],
+      ['totalResponseTimeS', 'timeprofile_total_response_time_s'],
+      ['avgResponseTimeMs', 'timeprofile_avg_response_time_ms'],
+      ['totalProcessingTimeS', 'timeprofile_total_processing_time_s'],
+      ['avgProcessingTimeMs', 'timeprofile_avg_processing_time_ms'],
+      ['totalCpuTimeS', 'timeprofile_total_cpu_time_s'],
+      ['avgCpuTimeMs', 'timeprofile_avg_cpu_time_ms'],
+      ['totalDatabaseTimeS', 'timeprofile_total_database_time_s'],
+      ['avgDbTimeMs', 'timeprofile_avg_db_time_ms'],
+      ['totalDbProcedureTimeS', 'timeprofile_total_db_procedure_time_s'],
+      ['avgDbProcedureCallMs', 'timeprofile_avg_db_procedure_call_ms'],
+      ['totalRollWaitTimeS', 'timeprofile_total_roll_wait_time_s'],
+      ['avgRollWaitTimeMs', 'timeprofile_avg_roll_wait_time_ms'],
+      ['avgWaitTimeMs', 'timeprofile_avg_wait_time_ms'],
+      ['numberOfRoundtrips', 'timeprofile_roundtrips'],
+      ['avgFrontendNetworkTimeMs', 'timeprofile_avg_frontend_network_time_ms'],
+      ['avgGuiTimeMs', 'timeprofile_avg_gui_time_ms'],
+      // The Grafana ST03N dashboard sums sap_st03n_roll_wait_ms; roll wait is
+      // only available per time interval in this payload.
+      ['avgRollWaitTimeMs', 'roll_wait_ms'],
+    ],
+  },
+  {
+    // Empty array in the live payload — must emit the record count (0) only.
+    section: 'timeProfileTotal',
+    keys: ['timeProfileTotal', 'time_profile_total'],
+    metrics: [
+      ['numberOfDialogSteps', 'timeprofile_total_dialog_steps'],
+      ['totalResponseTimeS', 'timeprofile_total_total_response_time_s'],
+      ['avgResponseTimeMs', 'timeprofile_total_avg_response_time_ms'],
+      ['totalProcessingTimeS', 'timeprofile_total_total_processing_time_s'],
+      ['avgProcessingTimeMs', 'timeprofile_total_avg_processing_time_ms'],
+      ['totalCpuTimeS', 'timeprofile_total_total_cpu_time_s'],
+      ['avgCpuTimeMs', 'timeprofile_total_avg_cpu_time_ms'],
+      ['totalDatabaseTimeS', 'timeprofile_total_total_database_time_s'],
+      ['avgDbTimeMs', 'timeprofile_total_avg_db_time_ms'],
+      ['totalDbProcedureTimeS', 'timeprofile_total_total_db_procedure_time_s'],
+      ['avgDbProcedureCallMs', 'timeprofile_total_avg_db_procedure_call_ms'],
+      ['totalRollWaitTimeS', 'timeprofile_total_total_roll_wait_time_s'],
+      ['avgRollWaitTimeMs', 'timeprofile_total_avg_roll_wait_time_ms'],
+      ['avgWaitTimeMs', 'timeprofile_total_avg_wait_time_ms'],
+      ['numberOfRoundtrips', 'timeprofile_total_roundtrips'],
+      ['avgFrontendNetworkTimeMs', 'timeprofile_total_avg_frontend_network_time_ms'],
+      ['avgGuiTimeMs', 'timeprofile_total_avg_gui_time_ms'],
+    ],
+    ignored: ['timeInterval'],
+  },
+  {
+    section: 'topResponseTime',
+    keys: ['topResponseTime', 'top_response_time'],
+    dimension: { field: 'wpid', label: 'wpid' },
+    extraLabels: [
+      ['task_type', 'tasktype'],
+      ['account', 'account'],
+      ['tcode', 'tcode'],
+      // enddate/endtime complete the record identity: a top-N entry is "this
+      // work process, for this task type/account/T-Code, at that moment". The
+      // pair is unique per record (40 distinct values, 40 records), so no top
+      // record is silently collapsed and the label set stays bounded.
+      ['end_date', 'enddate'],
+      ['end_time', 'endtime'],
+    ],
+    metrics: [
+      ['respti', 'top_response_time_ms'],
+      ['procti', 'top_response_processing_time_ms'],
+      ['cputi', 'top_response_cpu_time_ms'],
+      ['rollwaitti', 'top_response_roll_wait_ms'],
+      ['guitime', 'top_response_gui_time_ms'],
+      ['guinettime', 'top_response_gui_net_time_ms'],
+      ['dbpCount', 'top_response_db_procedure_count'],
+      ['dsqlcnt', 'top_response_db_sql_count'],
+      ['rollinti', 'top_response_roll_in_count'],
+      ['rolloutcnt', 'top_response_roll_out_count'],
+      ['rolloutti', 'top_response_roll_out_time_ms'],
+      ['usedbytes', 'top_response_used_bytes'],
+      ['rfcreceive', 'top_response_rfc_receive'],
+      ['rfcsend', 'top_response_rfc_send'],
+    ],
+    ignored: ['terminalid', 'mandt', 'report'],
+  },
+  {
+    section: 'topDbAccesses',
+    keys: ['topDbAccesses', 'top_db_accesses'],
+    dimension: { field: 'wpid', label: 'wpid' },
+    extraLabels: [
+      ['task_type', 'tasktype'],
+      ['tcode', 'tcode'],
+      // btcjobname is a real dimension of this top-N section (40 records, so the
+      // label set stays bounded) — it identifies the job behind the DB load.
+      ['background_job', 'btcjobname'],
+      // enddate/endtime complete the record identity (40 distinct pairs for 40
+      // records) so repeated wpid/job combinations do not collapse.
+      ['end_date', 'enddate'],
+      ['end_time', 'endtime'],
+    ],
+    metrics: [
+      ['respti', 'top_db_response_time_ms'],
+      ['procti', 'top_db_processing_time_ms'],
+      ['cputi', 'top_db_cpu_time_ms'],
+      ['rollwaitti', 'top_db_roll_wait_ms'],
+      ['guitime', 'top_db_gui_time_ms'],
+      ['guinettime', 'top_db_gui_net_time_ms'],
+      ['dbpCount', 'top_db_procedure_count'],
+      ['dsqlcnt', 'top_db_sql_count'],
+      ['rollinti', 'top_db_roll_in_count'],
+      ['rolloutcnt', 'top_db_roll_out_count'],
+      ['rolloutti', 'top_db_roll_out_time_ms'],
+      ['usedbytes', 'top_db_used_bytes'],
+      ['rfcreceive', 'top_db_rfc_receive'],
+      ['rfcsend', 'top_db_rfc_send'],
+    ],
+    ignored: ['terminalid', 'mandt', 'account', 'report'],
+  },
+  {
+    section: 'memoryUseStatistics',
+    keys: ['memoryUseStatistics', 'memory_use_statistics'],
+    aggregate: {
+      weight: 'numOfDialogSteps',
+      sum: [
+        ['numOfDialogSteps', 'memory_dialog_steps'],
+        ['numOfWpReservations', 'memory_wp_reservations'],
+        ['numOfWorkProcessRestarts', 'memory_wp_restarts'],
+      ],
+      weightedAvg: [
+        ['avgTotalMemoryUsageKb', 'memory_avg_total_usage_kb'],
+        ['avgUsageExtendedMemoryKb', 'memory_avg_extended_memory_kb'],
+        ['avgPrivateMemoryUsageKb', 'memory_avg_private_memory_kb'],
+      ],
+      max: [['maxUsageExtendedMemoryKb', 'memory_max_extended_memory_kb']],
+    },
+    ignored: ['reportOrTransactionName', 'nameOfBackgroundJob'],
+  },
+  {
+    section: 'rfcClientProfile',
+    keys: ['rfcClientProfile', 'rfc_client_profile'],
+    dimension: { field: 'functionModule', label: 'function_module' },
+    metrics: [
+      ['numberOfCalls', 'rfc_client_calls'],
+      ['totalExecutionTime', 'rfc_client_total_execution_time'],
+      ['avgTimePerRfc', 'rfc_client_avg_time_ms'],
+      ['totalCallTime', 'rfc_client_total_call_time'],
+      ['avgTimePerRequest', 'rfc_client_avg_time_per_request'],
+      ['sendData', 'rfc_client_send_data'],
+      ['receivedData', 'rfc_client_received_data'],
+    ],
+  },
+  {
+    section: 'rfcClientDestProfile',
+    keys: ['rfcClientDestProfile', 'rfc_client_dest_profile'],
+    dimension: { field: 'reportOrTransactionName', label: 'transaction' },
+    // 12 records → 11 distinct report names; the job disambiguates them.
+    extraLabels: [['background_job', 'nameOfBackgroundJob']],
+    metrics: [
+      ['numberOfCalls', 'rfc_client_dest_calls'],
+      ['totalExecutionTime', 'rfc_client_dest_total_execution_time'],
+      ['avgTimePerRfc', 'rfc_client_dest_avg_time_ms'],
+      ['totalCallTime', 'rfc_client_dest_total_call_time'],
+      ['avgTimePerRequest', 'rfc_client_dest_avg_time_per_request'],
+      ['sendData', 'rfc_client_dest_send_data'],
+      ['receivedData', 'rfc_client_dest_received_data'],
+      ['numberOfRecords', 'rfc_client_dest_records'],
+    ],
+  },
+  {
+    section: 'rfcServerProfile',
+    keys: ['rfcServerProfile', 'rfc_server_profile'],
+    dimension: { field: 'functionModule', label: 'function_module' },
+    metrics: [
+      ['numberOfRfcCalls', 'rfc_server_calls'],
+      ['totalExecutionTime', 'rfc_server_total_execution_time'],
+      ['avgTimePerRfc', 'rfc_server_avg_time_ms'],
+      ['totalCallTime', 'rfc_server_total_call_time'],
+      ['avgTimePerCall', 'rfc_server_avg_time_per_call'],
+      ['rfcSendData', 'rfc_server_send_data'],
+      ['receivedDataThroughRfc', 'rfc_server_received_data'],
+    ],
+  },
+  {
+    section: 'rfcServerDestProfile',
+    keys: ['rfcServerDestProfile', 'rfc_server_dest_profile'],
+    dimension: { field: 'reportOrTransactionName', label: 'transaction' },
+    extraLabels: [['background_job', 'nameOfBackgroundJob']],
+    metrics: [
+      ['numberOfRfcCalls', 'rfc_server_dest_calls'],
+      ['totalExecutionTime', 'rfc_server_dest_total_execution_time'],
+      ['avgTimePerRfc', 'rfc_server_dest_avg_time_ms'],
+      ['totalCallTime', 'rfc_server_dest_total_call_time'],
+      ['avgTimePerCall', 'rfc_server_dest_avg_time_per_call'],
+      ['rfcSendData', 'rfc_server_dest_send_data'],
+      ['receivedData', 'rfc_server_dest_received_data'],
+      ['numberOfRecords', 'rfc_server_dest_records'],
+    ],
+  },
+  {
+    section: 'userProfile',
+    keys: ['userProfile', 'user_profile'],
+    dimension: { field: 'user', label: 'user' },
+    metrics: [
+      ['numberOfSteps', 'user_steps'],
+      ['totalResponseTimeS', 'user_total_response_time_s'],
+      ['avgResponseTimeMs', 'user_avg_response_time_ms'],
+      ['totalCpuTimeS', 'user_total_cpu_time_s'],
+      ['avgCpuTimeMs', 'user_avg_cpu_time_ms'],
+      ['totalDbTimeS', 'user_total_db_time_s'],
+      ['avgDbTimeMs', 'user_avg_db_time_ms'],
+      ['totalQueueTimeS', 'user_total_queue_time_s'],
+      ['avgQueueTimeMs', 'user_avg_queue_time_ms'],
+      ['totalGuiTimeS', 'user_total_gui_time_s'],
+      ['avgGuiTimeMs', 'user_avg_gui_time_ms'],
+    ],
+  },
+  {
+    section: 'settlementStatistics',
+    keys: ['settlementStatistics', 'settlement_statistics'],
+    // This section is per SAP client — its own `client` field is the dimension.
+    dimension: { field: 'client', label: 'client' },
+    metrics: [
+      ['numberOfSteps', 'settlement_steps'],
+      ['responseTimeS', 'settlement_response_time_s'],
+      ['processingTimeS', 'settlement_processing_time_s'],
+      ['cpuTimeS', 'settlement_cpu_time_s'],
+      ['rollWaitTimeS', 'settlement_roll_wait_time_s'],
+      ['totalQueueTimeS', 'settlement_queue_time_s'],
+      ['numberOfDialogSteps', 'settlement_dialog_steps'],
+      ['numberOfUpdateSteps', 'settlement_update_steps'],
+      ['numberOfBackgroundSteps', 'settlement_background_steps'],
+      ['databaseTimeS', 'settlement_database_time_s'],
+    ],
+  },
+  {
+    section: 'frontendStatistics',
+    keys: ['frontendStatistics', 'frontend_statistics'],
+    dimension: { field: 'frontendName', label: 'frontend_name' },
+    extraLabels: [['instance', 'instance']],
+    metrics: [
+      ['numberOfSteps', 'frontend_steps'],
+      ['inputKb', 'frontend_input_kb'],
+      ['avgInputByte', 'frontend_avg_input_bytes'],
+      ['outputKb', 'frontend_output_kb'],
+      ['avgOutputByte', 'frontend_avg_output_bytes'],
+      ['frontendNetworkTimeS', 'frontend_network_time_s'],
+      ['avgFrontendNetworkTimeMs', 'frontend_avg_network_time_ms'],
+      ['guiTimeS', 'frontend_gui_time_s'],
+      ['avgGuiTimePerOperationMs', 'frontend_avg_gui_time_per_operation_ms'],
+      ['numberOfRoundtrips', 'frontend_roundtrips'],
+    ],
+  },
+];
+
+/**
+ * ST03N — Workload Analysis.
+ *
+ * Receives the FULL parsed payload (like AL08/ST22/SM13) because ST03N is a
+ * multi-section document, not a flat row array. Every section listed above con-
+ * tributes metrics; the empty timeProfileTotal section contributes its record
+ * count (0) and nothing else.
+ *
+ * @param {Record<string, any>} parsed full parsed ST03N payload
+ * @param {string} prefix metric prefix (config.metrics.prefix, usually 'sap')
+ * @returns {Array<{ fullName: string, value: number, labels: object }>}
+ */
+function collectST03N(parsed, prefix) {
+  const results = [];
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return results;
+
+  const system = strField(parsed, ['system', 'SYSTEM']);
+  const client = strField(parsed, ['client', 'CLIENT']);
+  const periodType = strField(parsed, ['periodType', 'period_type', 'PERIOD_TYPE']);
+  const periodStart = strField(parsed, ['periodStart', 'period_start', 'PERIOD_START']);
+  const monitorType = strField(parsed, ['monitor_type', 'MONITOR_TYPE']);
+
+  // Scope labels attached to every ST03N metric of this snapshot.
+  const scope = {};
+  if (system) scope.system = system;
+  if (client) scope.client = client;
+
+  // Snapshot identity — one series per payload.
+  const infoLabels = { ...scope };
+  if (monitorType) infoLabels.monitor_type = monitorType;
+  if (periodType) infoLabels.period_type = periodType;
+  if (periodStart) infoLabels.period_start = periodStart;
+  results.push({ fullName: `${prefix}_st03n_snapshot_info`, value: 1, labels: infoLabels });
+
+  for (const spec of ST03N_SECTIONS) {
+    const rows = st03nArray(parsed, spec.keys);
+
+    // Section record count is ALWAYS emitted: a section being empty in the
+    // source (timeProfileTotal) is observable instead of failing the parse.
+    results.push({
+      fullName: `${prefix}_st03n_records`,
+      value: rows.length,
+      labels: { ...scope, section: spec.section },
+    });
+
+    if (rows.length === 0) continue;
+
+    // ── Aggregated sections (68/99 report rows → fixed, small label sets) ──
+    if (spec.aggregate) {
+      const weight = spec.aggregate.weight;
+      for (const [field, suffix] of spec.aggregate.sum || []) {
+        results.push({
+          fullName: `${prefix}_st03n_${suffix}`,
+          value: st03nSum(rows, field),
+          labels: { ...scope },
+        });
+      }
+      for (const [field, suffix] of spec.aggregate.weightedAvg || []) {
+        const value = st03nWeightedAvg(rows, field, weight);
+        if (value !== null) {
+          results.push({ fullName: `${prefix}_st03n_${suffix}`, value, labels: { ...scope } });
+        }
+      }
+      for (const [field, suffix] of spec.aggregate.max || []) {
+        const value = st03nMax(rows, field);
+        if (value !== null) {
+          results.push({ fullName: `${prefix}_st03n_${suffix}`, value, labels: { ...scope } });
+        }
+      }
+      continue;
+    }
+
+    // ── Per-record sections ────────────────────────────────────────────────
+    for (const row of rows) {
+      const labels = { ...scope };
+      if (spec.dimension) {
+        labels[spec.dimension.label] = st03nStr(row, spec.dimension.field);
+      }
+      for (const [label, field] of spec.extraLabels || []) {
+        labels[label] = st03nStr(row, field);
+      }
+
+      for (const [field, suffix] of spec.metrics || []) {
+        const value = st03nNum(row, field);
+        if (value === null) continue;
+        results.push({ fullName: `${prefix}_st03n_${suffix}`, value, labels: { ...labels } });
+      }
+      for (const [suffix, compute] of spec.derived || []) {
+        const value = compute(row);
+        if (value === null) continue;
+        results.push({ fullName: `${prefix}_st03n_${suffix}`, value, labels: { ...labels } });
+      }
+      for (const [suffix, value] of spec.constants || []) {
+        results.push({ fullName: `${prefix}_st03n_${suffix}`, value, labels: { ...labels } });
+      }
+    }
+  }
+
+  return results;
+}
 
 const COLLECTOR_MAP = {
   AL08: collectAL08,
@@ -3817,6 +4596,12 @@ function parseToMetrics(jsonString, tcode, metricsPrefix) {
         // the data rows — the collector handles row extraction itself.
         const slicenseMetrics = collectSLICENSE(parsed, metricsPrefix);
         rawMetrics.push(...slicenseMetrics);
+      } else if (tcodeKey === 'ST03N') {
+        // ST03N is a multi-section nested document (workloadOverview,
+        // transactionProfile, timeProfile, topResponseTime, …) — the collector
+        // reads every section from the full parsed payload.
+        const st03nMetrics = collectST03N(parsed, metricsPrefix);
+        rawMetrics.push(...st03nMetrics);
       } else if (tcodeKey === 'SM21') {
         // SM21 needs the full parsed object (top-level monitor_type) plus the
         // data rows — the collector handles row extraction itself.
@@ -3885,6 +4670,7 @@ module.exports = {
   collectSP12,
   collectST02,
   collectST03N,
+  collectST03NLegacyRows,
   collectSLICENSE,
   collectSTRUST,
   collectRZ20,

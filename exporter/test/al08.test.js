@@ -30,6 +30,7 @@ const EXACT_SAMPLE = {
       USERID: 'SAP_WSRT',
       TCODE: '',
       TERMINAL: 'SAPIDES.waddaya.com',
+      DATE: '16/09/2026',
       TIME: '121127',
       SESSION: '  1',
       TYPE: 32,
@@ -46,6 +47,7 @@ const EXPECTED_LABELS = [
   'userid',
   'tcode',
   'terminal',
+  'date',
   'time',
   'session',
   'type',
@@ -83,7 +85,7 @@ describe('AL08 collector', () => {
     expect(metrics.some((m) => m.fullName === 'sap_al08_tcode_count')).toBe(false);
   });
 
-  test('session_info carries all 11 source fields as labels with exact raw values', () => {
+  test('session_info carries all 12 source fields as labels with exact raw values', () => {
     const { metrics } = parseToMetrics(JSON.stringify(EXACT_SAMPLE), 'AL08', 'sap');
     const info = find(metrics, 'sap_al08_session_info');
     expect(info).toBeDefined();
@@ -97,6 +99,7 @@ describe('AL08 collector', () => {
     expect(info.labels.userid).toBe('SAP_WSRT');
     expect(info.labels.tcode).toBe(''); // empty string preserved, not dropped
     expect(info.labels.terminal).toBe('SAPIDES.waddaya.com');
+    expect(info.labels.date).toBe('16/09/2026');
     expect(info.labels.time).toBe('121127');
     expect(info.labels.session).toBe('  1'); // raw value incl. leading spaces
     expect(info.labels.type).toBe('32');
@@ -105,7 +108,7 @@ describe('AL08 collector', () => {
     expect(info.labels.memory).toBe('4265');
   });
 
-  test('all 11 fields have _present and _distinct validation metrics (22 total)', () => {
+  test('all 12 fields have _present and _distinct validation metrics (24 total)', () => {
     const { metrics } = parseToMetrics(JSON.stringify(EXACT_SAMPLE), 'AL08', 'sap');
     const names = new Set(metrics.map((m) => m.fullName));
     for (const field of EXPECTED_LABELS) {
@@ -113,7 +116,7 @@ describe('AL08 collector', () => {
       expect(names.has(`sap_al08_${field}_distinct`)).toBe(true);
     }
     const validationCount = metrics.filter((m) => /_present$|_distinct$/.test(m.fullName)).length;
-    expect(validationCount).toBe(22);
+    expect(validationCount).toBe(24);
   });
 
   test('empty TCODE counts as absent for _present but stays observable in session_info', () => {
@@ -133,6 +136,7 @@ describe('AL08 collector', () => {
           USERID: 'ZEROUSER',
           TCODE: 'X',
           TERMINAL: 'term',
+          DATE: '16/09/2026',
           TIME: '000000',
           SESSION: '0',
           TYPE: 0,

@@ -50,15 +50,22 @@ The platform collects SAP system metrics via T-Codes and makes them visible in G
    - Each T-Code has its own JSON schema with specific field names.
    - Multiple files per T-Code may exist; the exporter always processes the **latest** file by `LastModified`.
 
-2. The **Node.js Prometheus Exporter** runs on each Prometheus scrape:
+2. The **Node.js Prometheus Exporter** answers every Prometheus scrape, re-reading
+   S3 only when its in-memory cache is older than `S3_CACHE_TTL_SECONDS`
+   (default **15 seconds**). On a refresh it:
    - Lists all S3 objects
    - Groups files by T-Code
    - Selects only the **latest** file per T-Code
+   - Re-downloads only files whose `{key, LastModified}` changed since the last refresh
    - Downloads and parses the JSON using **T-Code-specific collectors**
    - Converts data into **meaningful Prometheus Gauge metrics** (no generic walker)
    - Exposes all metrics at the `/metrics` endpoint
 
-3. **Prometheus** scrapes the exporter every 60 seconds.
+   Scrapes arriving while the cache is still fresh are served from memory with
+   **zero S3 calls**, so the effective S3 read cadence is ~15 s regardless of how
+   often Prometheus scrapes.
+
+3. **Prometheus** scrapes the exporter every **10 seconds** (`prometheus/prometheus.yml`).
 
 4. **Grafana** visualises the metrics on auto-provisioned dashboards.
 
@@ -116,6 +123,7 @@ AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 S3_BUCKET_NAME=my-sap-bucket
+S3_CACHE_TTL_SECONDS=15
 ```
 
 ### 3. Start All Services

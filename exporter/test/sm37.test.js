@@ -213,4 +213,80 @@ describe('SM37 collector (real fixture)', () => {
     const fromDirect = collectSM37(REAL, 'sap');
     expect(fromDirect.length).toBe(metrics.length);
   });
+
+  test('authoritative 14-field schema preserves all 14 fields with exact types and unique job_key', () => {
+    const payload14 = {
+      monitor_type: 'SM37',
+      data: [
+        {
+          JOBNAME: 'SAPCONNECT INT SEND',
+          STATUS: 'F',
+          STRTDATE: '15/09/2026',
+          STRTTIME: '15:31:34',
+          ENDDATE: '15/09/2026',
+          ENDTIME: '15:31:34',
+          SDLUNAME: 'ASINGH',
+          LASTCHNAME: 'MANIK',
+          JOBCLASS: 'A',
+          PRIORITY: '0 ',
+          EXECSERVER: '',
+          STEPCOUNT: '1',
+          PROGNAME: 'RSCONN01',
+          VARIANT: 'SAP&CONNECTINT',
+        },
+        {
+          JOBNAME: '/BDL/TASK_PROCESSOR',
+          STATUS: 'P',
+          STRTDATE: '',
+          STRTTIME: '',
+          ENDDATE: '',
+          ENDTIME: '',
+          SDLUNAME: 'SAP*',
+          LASTCHNAME: 'DDIC',
+          JOBCLASS: 'C',
+          PRIORITY: '0 ',
+          EXECSERVER: '',
+          STEPCOUNT: '1',
+          PROGNAME: '/BDL/TASK_SCHEDULER',
+          VARIANT: '&0000000000000',
+        },
+      ],
+    };
+
+    const parsedMetrics = collectSM37(payload14, 'sap');
+    const jobInfos = parsedMetrics.filter((m) => m.fullName === 'sap_sm37_job_info');
+    expect(jobInfos.length).toBe(2);
+
+    const first = jobInfos[0];
+    const expected14 = [
+      'enddate',
+      'endtime',
+      'execserver',
+      'job_key',
+      'jobclass',
+      'jobname',
+      'lastchname',
+      'priority',
+      'progname',
+      'sdluname',
+      'status',
+      'stepcount',
+      'strtdate',
+      'strttime',
+      'variant',
+    ].sort();
+
+    expect(Object.keys(first.labels).sort()).toEqual(expected14);
+    expect(first.labels.priority).toBe('0 ');
+    expect(first.labels.stepcount).toBe('1');
+    expect(first.labels.progname).toBe('RSCONN01');
+    expect(first.labels.variant).toBe('SAP&CONNECTINT');
+    expect(first.labels.job_key).toBe('1');
+    expect(first.labels.execserver).toBe('');
+
+    const second = jobInfos[1];
+    expect(second.labels.variant).toBe('&0000000000000');
+    expect(second.labels.job_key).toBe('2');
+  });
 });
+

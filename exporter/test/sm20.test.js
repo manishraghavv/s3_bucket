@@ -307,4 +307,78 @@ describe('SM20 collector (real fixture)', () => {
       expect(Object.keys(info.labels).length).toBe(6);
     }
   });
+
+  test('8-field source schema: emits all 8 source labels on event_info and presence metrics', () => {
+    const payload8 = {
+      monitor_type: 'SM20',
+      data: [
+        {
+          SENDER_ID: 'SAPIDES_JCI_00',
+          USER: 'SAPSYS',
+          TERMINAL: '',
+          TCODE: '',
+          CLIENT: '000',
+          AUDIT_DATE: '16/09/2026',
+          AUDIT_TIME: '00:00:06',
+          AUDIT_LOG_MSG_TXT: 'Report RSDSSPTI Started',
+        },
+        {
+          SENDER_ID: 'SAPIDES_JCI_00',
+          USER: 'AJAY',
+          TERMINAL: 'wspl-anegi',
+          TCODE: 'SE24',
+          CLIENT: '811',
+          AUDIT_DATE: '16/09/2026',
+          AUDIT_TIME: '00:03:11',
+          AUDIT_LOG_MSG_TXT: 'Report SEO_STARTUP Started',
+        },
+      ],
+    };
+
+    const metrics = parse(payload8);
+    const infos = metrics.filter((m) => m.fullName === 'sap_sm20_event_info');
+    expect(infos.length).toBe(2);
+
+    const first = infos[0];
+    expect(first.labels.sender_id).toBe('SAPIDES_JCI_00');
+    expect(first.labels.user).toBe('SAPSYS');
+    expect(first.labels.terminal).toBe('');
+    expect(first.labels.tcode).toBe('');
+    expect(first.labels.client).toBe('000');
+    expect(first.labels.audit_date).toBe('16/09/2026');
+    expect(first.labels.audit_time).toBe('00:00:06');
+    expect(first.labels.audit_log_msg_txt).toBe('Report RSDSSPTI Started');
+
+    const second = infos[1];
+    expect(second.labels.sender_id).toBe('SAPIDES_JCI_00');
+    expect(second.labels.user).toBe('AJAY');
+    expect(second.labels.terminal).toBe('wspl-anegi');
+    expect(second.labels.tcode).toBe('SE24');
+    expect(second.labels.client).toBe('811');
+    expect(second.labels.audit_date).toBe('16/09/2026');
+    expect(second.labels.audit_time).toBe('00:03:11');
+    expect(second.labels.audit_log_msg_txt).toBe('Report SEO_STARTUP Started');
+
+    // Check all 8 source labels are present
+    const expectedKeys = [
+      'sender_id',
+      'user',
+      'terminal',
+      'tcode',
+      'client',
+      'audit_date',
+      'audit_time',
+      'audit_log_msg_txt',
+      'event_key',
+    ].sort();
+    expect(Object.keys(first.labels).sort()).toEqual(expectedKeys);
+    expect(Object.keys(second.labels).sort()).toEqual(expectedKeys);
+
+    // Check presence metrics for all 8 fields
+    expect(find(metrics, 'sap_sm20_audit_date_present').value).toBe(2);
+    expect(find(metrics, 'sap_sm20_audit_time_present').value).toBe(2);
+    expect(find(metrics, 'sap_sm20_audit_log_msg_txt_present').value).toBe(2);
+    expect(find(metrics, 'sap_sm20_client_present').value).toBe(2);
+    expect(find(metrics, 'sap_sm20_terminal_present').value).toBe(1); // 1 non-empty, 1 empty
+  });
 });
